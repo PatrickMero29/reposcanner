@@ -1,0 +1,20 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Datasets and run outputs are large / regeneratable — don't commit by default.
+data/*.duckdb
+data/experiments/
+*.duckdb.wal
+
+# Scan output reports
+scan_report.json
+scan_report.md
+
+.pytest_cache/
+.mypy_cache/
