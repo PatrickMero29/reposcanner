@@ -27,7 +27,7 @@ Design notes for when this gets built:
   - Need a stable per-finding signature to dedupe across repeated scans
     (e.g. hash of file_path + function_name + cwe_ids + a normalized
     description) so re-running the scanner doesn't spam duplicate issues.
-  - Respect GitHub API rate limits — batch/backoff similar to gemini_client.py.
+  - Respect GitHub API rate limits — batch/backoff similar to anthropic_client.py.
   - Probably want a `--dry-run` flag that prints what *would* be created.
 """
 

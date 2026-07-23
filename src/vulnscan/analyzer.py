@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .gemini_client import generate_structured
+from .anthropic_client import generate_structured
 from .prompts import build_analysis_prompt, build_verification_prompt
 from .schemas import (
     Finding,

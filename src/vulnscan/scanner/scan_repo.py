@@ -108,7 +108,7 @@ async def scan_repo(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scan a local repo for vulnerabilities with Gemini.")
+    parser = argparse.ArgumentParser(description="Scan a local repo for vulnerabilities with Claude.")
     parser.add_argument("repo_path", help="Path to the repo to scan.")
     parser.add_argument(
         "--level", choices=[l.value for l in JustificationLevel],

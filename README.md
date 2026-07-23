@@ -1,6 +1,4 @@
-# vulnscan
-
-A multi-language, Gemini-powered vulnerability scanner, built as a generalization of
+A multi-language, vulnerability scanner, built as a generalization of
 [ZeroPath's opus-benchmark](https://github.com/ZeroPathAI/opus-benchmark). It has two modes that
 share one analyzer core:
 
@@ -12,6 +10,8 @@ share one analyzer core:
 
 Currently supports **Python** only. Adding a language means writing one new chunker
 (see "Adding a language" below) — nothing else in the pipeline needs to change.
+
+All of the work done here is subject to being rewritten so feel free to work off any version of it, but I plan on changing lots of things as I continue working on this.
 
 ## Why the architecture differs from the original repo
 
@@ -30,10 +30,10 @@ drifting out of sync.
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-cp .env.example .env        # then edit .env and set GEMINI_API_KEY
+cp .env.example .env        # then edit .env and set ANTHROPIC_API_KEY
 ```
 
-Run the tests to confirm the install works (these don't call the Gemini API):
+Run the tests to confirm the install works (these don't call the Claude API):
 
 ```bash
 pytest
@@ -46,14 +46,14 @@ vulnscan scan /path/to/some/repo --level extensive_justification --out report
 ```
 
 This walks the repo, extracts Python functions (via `ast`, see
-`src/vulnscan/chunking/python_chunker.py`), runs each one through Gemini at the requested
+`src/vulnscan/chunking/python_chunker.py`), runs each one through Claude at the requested
 justification level, and writes `report.json` and `report.md`.
 
 Justification levels, in increasing order of rigor (and API cost):
 - `no_justification` — fastest/cheapest, most false positives.
 - `limited_justification` — requires a step-by-step execution trace.
 - `extensive_justification` — requires a full taint/reachability proof (recommended default).
-- `verification_agent` — extensive, plus a second Gemini call independently re-checks each
+- `verification_agent` — extensive, plus a second Claude call independently re-checks each
   finding and discards ones that don't hold up. Slowest and most expensive, fewest false
   positives.
 
@@ -126,7 +126,7 @@ src/vulnscan/
 ├── schemas.py          # Finding / justification-level data model — read this first
 ├── config.py            # env-var settings
 ├── prompts.py            # per-justification-level prompt text
-├── gemini_client.py      # structured-output calls to Gemini, with retries
+├── anthropic_client.py     # structured-output calls to Claude (forced tool use), with retries
 ├── analyzer.py            # core analyze() — shared by scanner and benchmark
 ├── cli.py                  # `vulnscan <command>` entrypoint
 ├── chunking/               # source file -> per-function chunks (Python only so far)

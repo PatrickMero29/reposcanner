@@ -12,7 +12,9 @@ data/*.duckdb
 data/experiments/
 *.duckdb.wal
 
-# Scan output reports
+# Scan output reports (any --out name)
+*_report.json
+*_report.md
 scan_report.json
 scan_report.md
 

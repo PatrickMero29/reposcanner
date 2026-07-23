@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..dataset.cvefixes_loader import get_pairs
-from ..gemini_client import generate_structured
+from ..anthropic_client import generate_structured
 
 logger = logging.getLogger("vulnscan.pipeline.judge")
 

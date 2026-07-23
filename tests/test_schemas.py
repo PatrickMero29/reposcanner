@@ -21,7 +21,6 @@ def _make_finding(**overrides) -> dict:
             severity=Severity.HIGH,
             impact="Arbitrary command execution.",
         ),
-        justification=None,
         confidence=0.9,
     )
     base.update(overrides)

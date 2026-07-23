@@ -5,7 +5,7 @@
 #   ./scripts/run_experiment.sh extensive_justification 1
 #
 # Assumes the dataset has already been loaded (see README "Benchmark mode"),
-# and GEMINI_API_KEY is set (directly or via .env).
+# and ANTHROPIC_API_KEY is set (directly or via .env).
 
 set -euo pipefail
 
