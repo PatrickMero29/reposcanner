@@ -1,0 +1,41 @@
+"pair_id","cve_id","cwe_ids","language","repo","file_path","function_name","func_before","func_after","commit_message","nvd_url"
+"demo-0001","DEMO-0001","CWE-89","python","example/demo-app","app/db.py","get_user","def get_user(conn, username):
+    query = ""SELECT * FROM users WHERE username = '"" + username + ""'""
+    return conn.execute(query).fetchone()
+","def get_user(conn, username):
+    query = ""SELECT * FROM users WHERE username = ?""
+    return conn.execute(query, (username,)).fetchone()
+","Fix SQL injection in get_user by using parameterized query",""
+"demo-0002","DEMO-0002","CWE-78","python","example/demo-app","app/tools.py","ping_host","import os
+def ping_host(host):
+    os.system('ping -c 1 ' + host)
+","import subprocess
+def ping_host(host):
+    subprocess.run(['ping', '-c', '1', host], check=False)
+","Fix command injection in ping_host by avoiding shell string concatenation",""
+"demo-0003","DEMO-0003","CWE-22","python","example/demo-app","app/files.py","read_upload","def read_upload(base_dir, filename):
+    path = base_dir + '/' + filename
+    with open(path) as f:
+        return f.read()
+","import os
+def read_upload(base_dir, filename):
+    safe_name = os.path.basename(filename)
+    path = os.path.join(base_dir, safe_name)
+    with open(path) as f:
+        return f.read()
+","Fix path traversal in read_upload by sanitizing filename",""
+"demo-0004","DEMO-0004","CWE-502","python","example/demo-app","app/cache.py","load_cached_object","import pickle
+def load_cached_object(raw_bytes):
+    return pickle.loads(raw_bytes)
+","import json
+def load_cached_object(raw_bytes):
+    return json.loads(raw_bytes)
+","Fix insecure deserialization by switching from pickle to json",""
+"demo-0005","DEMO-0005","CWE-798","python","example/demo-app","app/config.py","get_api_client","def get_api_client():
+    api_key = 'sk-hardcoded-demo-key-12345'
+    return ApiClient(api_key)
+","import os
+def get_api_client():
+    api_key = os.environ['API_KEY']
+    return ApiClient(api_key)
+","Fix hardcoded credential by reading API key from environment",""

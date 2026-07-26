@@ -61,6 +61,12 @@ def _cmd_bench_judge(args: argparse.Namespace) -> None:
     ))
 
 
+def _cmd_build_index(args: argparse.Namespace) -> None:
+    from .embedding.build_index import build_index
+    out = build_index(args.dataset_db, args.out, language=args.language, limit=args.limit)
+    print(f"Index built at {out}")
+
+
 def _cmd_bench_metrics(args: argparse.Namespace) -> None:
     from .pipeline.metrics import compute_metrics
     import json
@@ -87,6 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_load.add_argument("--dataset-db", required=True)
     p_load.add_argument("--replace", action="store_true")
     p_load.set_defaults(func=_cmd_bench_load)
+
+    p_index = sub.add_parser("build-index", help="Build the local CVE similarity index for retrieval-grounded analysis.")
+    p_index.add_argument("--dataset-db", required=True)
+    p_index.add_argument("--out", default="data/cve_index")
+    p_index.add_argument("--language", default=None)
+    p_index.add_argument("--limit", type=int, default=None, help="Cap pairs embedded (useful for a quick test run).")
+    p_index.set_defaults(func=_cmd_build_index)
 
     p_an = sub.add_parser("bench-analyze", help="Phase 1: analyze all pairs.")
     p_an.add_argument("--dataset-db", required=True)

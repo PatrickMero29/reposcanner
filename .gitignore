@@ -10,6 +10,7 @@ dist/
 # Datasets and run outputs are large / regeneratable — don't commit by default.
 data/*.duckdb
 data/experiments/
+data/cve_index/
 *.duckdb.wal
 
 # Scan output reports (any --out name)

@@ -1,4 +1,6 @@
-A multi-language, vulnerability scanner, built as a generalization of
+# vulnscan
+
+A multi-language, Claude-powered vulnerability scanner, built as a generalization of
 [ZeroPath's opus-benchmark](https://github.com/ZeroPathAI/opus-benchmark). It has two modes that
 share one analyzer core:
 
@@ -10,8 +12,6 @@ share one analyzer core:
 
 Currently supports **Python** only. Adding a language means writing one new chunker
 (see "Adding a language" below) — nothing else in the pipeline needs to change.
-
-All of the work done here is subject to being rewritten so feel free to work off any version of it, but I plan on changing lots of things as I continue working on this.
 
 ## Why the architecture differs from the original repo
 
@@ -111,6 +111,37 @@ vulnscan bench-metrics data/experiments/extensive_justification/runs/1/diff.json
 `bench-metrics` prints precision/recall/F1 at the function-pair level (see docstring in
 `src/vulnscan/pipeline/metrics.py` for exact definitions).
 
+## CVE retrieval (optional, but recommended)
+
+The analyzer can ground each finding against similar historical CVEs instead of judging
+vulnerability from first principles alone — this is the retrieval half of the
+"retrieval + classifier" architecture described in the project's long-term design notes.
+It's implemented as a local, free embedding index (no API calls, no per-use cost) over
+whatever pairs you've loaded via `bench-load`, so it reuses the exact same dataset.
+
+It's an opt-in install extra since the embedding model needs `sentence-transformers`
+(which pulls in `torch` — a large dependency you shouldn't be forced into just to run the
+plain scanner):
+
+```bash
+pip install -e ".[embeddings]"
+vulnscan build-index --dataset-db data/cvefixes.duckdb --out data/cve_index
+```
+
+The first run downloads the embedding model (cached afterward). Once the index exists,
+`vulnscan scan` and the benchmark pipeline automatically pick it up — no flag needed. Set
+`ENABLE_RETRIEVAL=false` in `.env` to turn it off, or `RETRIEVAL_TOP_K` to change how many
+similar CVEs are retrieved per function (default 5).
+
+If no index has been built (or the extra isn't installed), analysis proceeds exactly as
+before — retrieval degrades silently to "no evidence" rather than failing anything.
+
+Design note: this deliberately uses a brute-force numpy cosine-similarity search
+(`src/vulnscan/embedding/index.py`) instead of FAISS. For a corpus in the tens-of-thousands
+range this is plenty fast, and it sidesteps FAISS's notoriously fiddly Windows install. If
+the index ever needs to scale past ~100k-1M vectors, swapping FAISS/Qdrant in is a contained
+change to that one file.
+
 ## Adding a language
 
 1. Write `src/vulnscan/chunking/<lang>_chunker.py` exposing `chunk_file(path, source) -> list[CodeChunk]`.
@@ -145,3 +176,11 @@ src/vulnscan/
   against your actual data.
 - The CVEfixes column mapping in `dataset/cvefixes_loader.py` is best-effort and may need
   adjusting to your specific downloaded release (see `inspect_cvefixes_schema()`).
+- The default embedding model (`flax-sentence-embeddings/st-codesearch-distilroberta-base`)
+  is a general code-search model, not vulnerability-specific — it's a reasonable free
+  starting point, but a model fine-tuned on CVE pairs specifically would likely retrieve
+  more relevant matches. Override via `EMBEDDING_MODEL` in `.env` to try alternatives.
+- Next architecture step worth prioritizing over training a custom model: a fast rule-engine
+  pre-filter (e.g. wrapping Semgrep) ahead of the LLM analyzer, so Claude is only called on
+  functions a cheap static pass already flagged as suspicious — this is the highest-leverage
+  remaining cost reduction.

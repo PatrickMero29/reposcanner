@@ -34,6 +34,16 @@ class Settings:
     dataset_db_path: str = os.environ.get("VULNSCAN_DATASET_DB", "data/cvefixes.duckdb")
     output_dir: str = os.environ.get("VULNSCAN_OUTPUT_DIR", "data/experiments")
 
+    # CVE retrieval (optional — see src/vulnscan/embedding/). Requires the
+    # `embeddings` install extra; if that's not installed, retrieval just
+    # quietly no-ops rather than failing analysis.
+    enable_retrieval: bool = os.environ.get("ENABLE_RETRIEVAL", "true").strip().lower() in ("1", "true", "yes")
+    embedding_model: str = os.environ.get(
+        "EMBEDDING_MODEL", "flax-sentence-embeddings/st-codesearch-distilroberta-base"
+    )
+    embedding_index_dir: str = os.environ.get("EMBEDDING_INDEX_DIR", "data/cve_index")
+    retrieval_top_k: int = int(os.environ.get("RETRIEVAL_TOP_K", "5"))
+
 
 settings = Settings()
 

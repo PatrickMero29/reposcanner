@@ -12,6 +12,8 @@ import json
 import logging
 
 from .anthropic_client import generate_structured
+from .embedding.index import IndexEntry
+from .embedding.retrieve import retrieve_similar_cves
 from .prompts import build_analysis_prompt, build_verification_prompt
 from .schemas import (
     Finding,
@@ -28,6 +30,27 @@ logger = logging.getLogger("vulnscan.analyzer")
 MAX_VERIFICATION_ATTEMPTS = 2
 
 
+def _format_evidence(matches: list[tuple[IndexEntry, float]]) -> str | None:
+    if not matches:
+        return None
+    lines = [
+        "Similar historical vulnerabilities found via embedding search over known CVEs "
+        "(reference only — verify against the actual code below, do not assume an exact match):"
+    ]
+    for i, (entry, score) in enumerate(matches, start=1):
+        cve = entry.cve_id or "unknown CVE"
+        cwe = entry.cwe_ids or "unknown CWE"
+        lines.append(f"{i}. {cve} ({cwe}) — similarity {score:.2f}")
+        location = entry.function_name or "unknown function"
+        if entry.repo:
+            location += f" in {entry.repo}"
+        lines.append(f"   Function: {location}")
+        if entry.commit_message:
+            lines.append(f"   Fix commit message: {entry.commit_message}")
+        lines.append(f"   Vulnerable snippet preview: {entry.snippet_preview}")
+    return "\n".join(lines)
+
+
 async def analyze_function(
     *,
     code: str,
@@ -36,8 +59,14 @@ async def analyze_function(
     level: JustificationLevel = JustificationLevel.EXTENSIVE,
 ) -> list[Finding]:
     """Run one function through the analyzer at the given justification level."""
+    evidence_text = None
+    if settings.enable_retrieval:
+        matches = retrieve_similar_cves(code)
+        evidence_text = _format_evidence(matches)
+
     prompt = build_analysis_prompt(
-        code=code, function_name=function_name, language=language, level=level
+        code=code, function_name=function_name, language=language, level=level,
+        evidence_text=evidence_text,
     )
     result = await generate_structured(prompt=prompt, response_schema=FindingList)
     return result.findings

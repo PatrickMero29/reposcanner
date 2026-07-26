@@ -44,17 +44,40 @@ def open_db(duckdb_path: str) -> duckdb.DuckDBPyConnection:
 
 
 def load_from_csv(csv_path: str, duckdb_path: str, *, replace: bool = False) -> int:
-    """Load a generic-format CSV into the pairs table. Returns row count loaded."""
+    """Load a generic-format CSV into the pairs table. Returns row count loaded.
+
+    Uses read_csv() with an explicit column/dialect declaration rather than
+    read_csv_auto()'s sniffer. The sniffer samples a chunk of the file to
+    guess the header row and dialect, and multi-line quoted fields (a
+    function body spanning several lines inside one quoted CSV cell — the
+    normal case here) can throw off that guess, silently falling back to
+    generic column0/column1/... names. Declaring the schema up front makes
+    this immune to that.
+    """
     con = open_db(duckdb_path)
     if replace:
         con.execute("DELETE FROM pairs")
+    columns = ", ".join(
+        f"'{col}': 'VARCHAR'" for col in (
+            "pair_id", "cve_id", "cwe_ids", "language", "repo", "file_path",
+            "function_name", "func_before", "func_after", "commit_message", "nvd_url",
+        )
+    )
     con.execute(
         f"""
         INSERT OR REPLACE INTO pairs
         SELECT
             pair_id, cve_id, cwe_ids, language, repo, file_path, function_name,
             func_before, func_after, commit_message, nvd_url
-        FROM read_csv_auto('{csv_path}', HEADER=TRUE)
+        FROM read_csv(
+            '{csv_path}',
+            auto_detect = false,
+            header = true,
+            columns = {{{columns}}},
+            quote = '"',
+            escape = '"',
+            delim = ','
+        )
         """
     )
     count = con.execute("SELECT count(*) FROM pairs").fetchone()[0]

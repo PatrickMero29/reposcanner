@@ -45,12 +45,14 @@ def build_analysis_prompt(
     function_name: str,
     language: Language,
     level: JustificationLevel,
+    evidence_text: str | None = None,
 ) -> str:
+    evidence_section = f"\n{evidence_text}\n" if evidence_text else ""
     return f"""{SYSTEM_PROMPT}
 
 Justification requirements for this task:
 {_LEVEL_INSTRUCTIONS[level]}
-
+{evidence_section}
 Language: {language.value}
 Function under review: {function_name}
 

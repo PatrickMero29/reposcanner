@@ -94,12 +94,10 @@ async def generate_structured(
                 tool_choice={"type": "tool", "name": _TOOL_NAME},
                 messages=[{"role": "user", "content": prompt}],
             )
-            
             for block in response.content:
                 if block.type == "tool_use" and block.name == _TOOL_NAME:
                     return response_schema.model_validate(block.input)
             raise ValueError(f"No tool_use block found in Claude's response: {response.content!r}")
-        
         except anthropic.BadRequestError as exc:
             # 400s are not transient — retrying the exact same malformed/
             # unpayable request will never succeed (e.g. "credit balance too
@@ -107,7 +105,6 @@ async def generate_structured(
             # instead of burning the retry budget.
             logger.error("Claude rejected the request (non-retryable): %s", exc)
             raise
-
         except (anthropic.RateLimitError, anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
             last_exc = exc
             wait = _retry_after_seconds(exc) or min(30.0, (2 ** attempt) + random.uniform(0, 1))
@@ -116,7 +113,6 @@ async def generate_structured(
                 attempt + 1, settings.max_retries, exc, wait,
             )
             await asyncio.sleep(wait)
-
         except Exception as exc:  # noqa: BLE001 — e.g. a tool-input validation failure
             last_exc = exc
             wait = min(30.0, (2 ** attempt) + random.uniform(0, 1))
