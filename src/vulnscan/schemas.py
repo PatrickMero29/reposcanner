@@ -240,3 +240,4 @@ class ScanReport(BaseModel):
 
     static_findings: list[StaticFinding] = Field(default_factory=list)
     ai_findings: list[RepoFinding] = Field(default_factory=list)
+

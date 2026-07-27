@@ -1,45 +1,151 @@
-from vulnscan.rules.semgrep_runner import (
-    SemgrepFinding,
-    _extract_cwe_ids,
-    is_semgrep_available,
-    run_semgrep,
-)
+"""Wraps the Semgrep CLI as a fast, free, local static-analysis pre-filter.
+
+This is the "Rule Engine (Fast)" half of the two-stage architecture: Semgrep
+runs first, entirely locally, and flags candidate lines/functions. Only
+flagged functions get sent to the (currently Claude, eventually a trained
+model) "AI Engine (Deep Analysis)" — everything else is skipped, which is
+where the actual cost/time savings come from.
+
+Semgrep is a separate CLI tool, not a Python-importable library, so this
+module shells out to the `semgrep` binary and parses its JSON output
+(validated against a real local run — see the `columns`/JSON shape below).
+It degrades gracefully if semgrep isn't installed: callers get an empty
+result and a log message, never an exception, so a missing/broken semgrep
+install never breaks a scan — it just runs without the pre-filter.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger("vulnscan.rules.semgrep")
+
+_CWE_PATTERN = re.compile(r"CWE-\d+")
+
+# semgrep's own severities map onto our Severity enum this way. Anything not
+# listed here (semgrep does have a few other values in some rulesets) falls
+# back to MEDIUM rather than erroring.
+_SEVERITY_MAP = {
+    "ERROR": "high",
+    "WARNING": "medium",
+    "INFO": "low",
+    "CRITICAL": "critical",
+}
 
 
-def test_extract_cwe_ids_parses_canonical_id_from_verbose_string():
-    assert _extract_cwe_ids("CWE-78: OS Command Injection") == ["CWE-78"]
+@dataclass
+class SemgrepFinding:
+    rule_id: str
+    message: str
+    file_path: str  # relative to the scanned root, as reported by semgrep
+    start_line: int
+    end_line: int
+    severity: str  # normalized to our Severity enum's string values
+    cwe_ids: list[str]
 
 
-def test_extract_cwe_ids_handles_list_input():
-    assert _extract_cwe_ids(["CWE-89: SQL Injection", "CWE-20: Improper Input Validation"]) == ["CWE-89", "CWE-20"]
+def is_semgrep_available() -> bool:
+    return shutil.which("semgrep") is not None
 
 
-def test_extract_cwe_ids_handles_none_or_empty():
-    assert _extract_cwe_ids(None) == []
-    assert _extract_cwe_ids([]) == []
-    assert _extract_cwe_ids("") == []
+def _extract_cwe_ids(raw_cwe_field) -> list[str]:  # noqa: ANN001
+    """semgrep's metadata.cwe entries look like 'CWE-78: OS Command Injection'
+    — pull out just the canonical 'CWE-78' part to match this project's other
+    cwe_ids fields (schemas.UndesiredOperation.cwe_ids etc)."""
+    if not raw_cwe_field:
+        return []
+    raw_list = raw_cwe_field if isinstance(raw_cwe_field, list) else [raw_cwe_field]
+    ids = []
+    for entry in raw_list:
+        match = _CWE_PATTERN.search(str(entry))
+        if match:
+            ids.append(match.group(0))
+    return ids
 
 
-def test_extract_cwe_ids_ignores_unparseable_entries():
-    assert _extract_cwe_ids(["not a cwe string"]) == []
+def run_semgrep(
+    target_path: str,
+    *,
+    config: str = "auto",
+    timeout: int = 300,
+) -> list[SemgrepFinding]:
+    """Run semgrep against target_path and return parsed findings.
 
+    Never raises: any failure (semgrep not installed, timeout, bad JSON,
+    non-zero exit for a real error) is logged and results in an empty list,
+    so a broken semgrep install degrades to "no pre-filter" rather than
+    breaking the scan.
+    """
+    if not is_semgrep_available():
+        logger.info(
+            "semgrep not found on PATH — skipping static pre-filter, every function will go "
+            "straight to the AI analyzer. Install with `pip install semgrep` (or `pip install "
+            '-e ".[semgrep]"`) to enable it.'
+        )
+        return []
 
-def test_run_semgrep_degrades_gracefully_when_not_installed(monkeypatch):
-    monkeypatch.setattr("vulnscan.rules.semgrep_runner.is_semgrep_available", lambda: False)
-    results = run_semgrep("/some/path", config="auto")
-    assert results == []
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        json_out_path = Path(tmp_dir) / "semgrep_out.json"
+        cmd = [
+            "semgrep", "scan",
+            "--config", config,
+            "--json-output", str(json_out_path),
+            "--quiet",
+            "--metrics=off",
+            target_path,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "semgrep timed out after %ss on %s — continuing without static pre-filter for this run.",
+                timeout, target_path,
+            )
+            return []
+        except FileNotFoundError:
+            logger.info("semgrep not found — skipping static pre-filter.")
+            return []
 
+        # semgrep's exit codes: 0 = ran clean with no findings, 1 = ran clean
+        # WITH findings (not an error). Anything else is a real problem, but
+        # we still try to parse whatever JSON it managed to write, since
+        # partial results (e.g. one file failed to parse) beat nothing.
+        if result.returncode not in (0, 1):
+            logger.warning(
+                "semgrep exited with code %s on %s: %s",
+                result.returncode, target_path, (result.stderr or "")[:2000],
+            )
 
-def test_is_semgrep_available_returns_bool():
-    # Whatever the actual environment has, this should never raise.
-    assert isinstance(is_semgrep_available(), bool)
+        if not json_out_path.exists():
+            logger.warning("semgrep produced no JSON output for %s — continuing without static pre-filter.", target_path)
+            return []
 
+        try:
+            payload = json.loads(json_out_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            logger.warning("Could not parse semgrep JSON output for %s — continuing without static pre-filter.", target_path)
+            return []
 
-def test_semgrep_finding_is_a_plain_dataclass_with_expected_fields():
-    finding = SemgrepFinding(
-        rule_id="test-rule", message="test message", file_path="foo.py",
-        start_line=1, end_line=3, severity="high", cwe_ids=["CWE-78"],
-    )
-    assert finding.rule_id == "test-rule"
-    assert finding.severity == "high"
-    assert finding.cwe_ids == ["CWE-78"]
+    findings: list[SemgrepFinding] = []
+    for r in payload.get("results", []):
+        extra = r.get("extra", {})
+        severity_raw = extra.get("severity", "WARNING")
+        findings.append(SemgrepFinding(
+            rule_id=r.get("check_id", "unknown"),
+            message=extra.get("message", ""),
+            file_path=r.get("path", ""),
+            start_line=r.get("start", {}).get("line", 0),
+            end_line=r.get("end", {}).get("line", 0),
+            severity=_SEVERITY_MAP.get(severity_raw, "medium"),
+            cwe_ids=_extract_cwe_ids(extra.get("metadata", {}).get("cwe")),
+        ))
+
+    logger.info("semgrep found %d result(s) in %s", len(findings), target_path)
+    return findings

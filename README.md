@@ -111,6 +111,47 @@ vulnscan bench-metrics data/experiments/extensive_justification/runs/1/diff.json
 `bench-metrics` prints precision/recall/F1 at the function-pair level (see docstring in
 `src/vulnscan/pipeline/metrics.py` for exact definitions).
 
+## Semgrep pre-filter (recommended — free, local, works with zero API budget)
+
+Before any function reaches the AI engine, Semgrep runs as a fast, free, local static-analysis
+pass over the whole repo. Only functions it flags get sent to Claude — everything else is
+skipped entirely, which is the main cost/time lever in this tool. If Semgrep finds nothing at
+all (or isn't installed), the pipeline fails **open**: every function still gets analyzed,
+exactly as if this feature didn't exist, rather than silently reporting zero findings.
+
+Semgrep's own raw findings are always included in the report too, in their own clearly-labeled
+section — **even if you have zero Claude API budget**, since Semgrep needs no API key and no
+credits. This means `vulnscan scan` produces real, honest signal today with $0 spent on the AI
+engine; the AI-verified section is additive on top of that when you do have API access.
+
+Install it (a separate CLI tool, not just a Python import):
+
+```bash
+pip install -e ".[semgrep]"
+```
+
+It's on by default. To disable it and analyze every function regardless (e.g. to compare
+recall with/without the pre-filter):
+
+```bash
+vulnscan scan /path/to/repo --no-semgrep
+```
+
+Override the ruleset (default `auto`, which pulls Semgrep's registry rules — needs internet on
+first run):
+
+```bash
+vulnscan scan /path/to/repo --semgrep-config p/security-audit
+# or point at a local rule file / directory of your own rules:
+vulnscan scan /path/to/repo --semgrep-config ./my_rules.yaml
+```
+
+Report structure: `ScanReport` has two lists — `static_findings` (raw Semgrep matches, no AI
+involved, no false-negative risk from LLM judgment) and `ai_findings` (reachability-verified,
+grounded in both the specific Semgrep rule match *and* similar historical CVEs when the
+embedding index is built). The Markdown/JSON reports render both sections separately so it's
+always clear which engine produced which finding.
+
 ## CVE retrieval (optional, but recommended)
 
 The analyzer can ground each finding against similar historical CVEs instead of judging
@@ -180,7 +221,9 @@ src/vulnscan/
   is a general code-search model, not vulnerability-specific — it's a reasonable free
   starting point, but a model fine-tuned on CVE pairs specifically would likely retrieve
   more relevant matches. Override via `EMBEDDING_MODEL` in `.env` to try alternatives.
-- Next architecture step worth prioritizing over training a custom model: a fast rule-engine
-  pre-filter (e.g. wrapping Semgrep) ahead of the LLM analyzer, so Claude is only called on
-  functions a cheap static pass already flagged as suspicious — this is the highest-leverage
-  remaining cost reduction.
+- Next architecture step per the long-term plan: a custom-trained classifier (e.g. fine-tuned
+  CodeBERT/GraphCodeBERT) running on local GPU hardware, to reduce/eliminate dependence on a
+  paid LLM API entirely. The Semgrep pre-filter and CVE retrieval index built so far are exactly
+  the pieces that stage feeds off of — the pre-filter narrows candidates, retrieval provides
+  labeled nearest-neighbor examples, and a trained classifier could eventually replace or
+  supplement the Claude call as the "AI engine" stage.

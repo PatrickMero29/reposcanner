@@ -1,3 +1,6 @@
 # Vulnerability Scan Report
 
-**Total findings:** 0
+**AI-verified findings:** 0
+**Static (semgrep) findings:** 0
+
+No findings.

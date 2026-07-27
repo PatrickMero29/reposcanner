@@ -17,13 +17,16 @@ def _cmd_scan(args: argparse.Namespace) -> None:
     from .scanner.report_json import write_json_report
     from .scanner.report_markdown import write_markdown_report
 
-    findings = asyncio.run(scan_repo(args.repo_path, level=JustificationLevel(args.level)))
-    print(f"Found {len(findings)} findings.")
+    report = asyncio.run(scan_repo(
+        args.repo_path, level=JustificationLevel(args.level),
+        use_semgrep_prefilter=not args.no_semgrep, semgrep_config=args.semgrep_config,
+    ))
+    print(f"Found {len(report.static_findings)} static finding(s), {len(report.ai_findings)} AI-verified finding(s).")
     if args.format in ("json", "both"):
-        write_json_report(findings, f"{args.out}.json")
+        write_json_report(report, f"{args.out}.json")
         print(f"Wrote {args.out}.json")
     if args.format in ("markdown", "both"):
-        write_markdown_report(findings, f"{args.out}.md")
+        write_markdown_report(report, f"{args.out}.md")
         print(f"Wrote {args.out}.md")
 
 
@@ -85,6 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--level", choices=[l.value for l in JustificationLevel], default=JustificationLevel.EXTENSIVE.value)
     p_scan.add_argument("--out", default="scan_report")
     p_scan.add_argument("--format", choices=["json", "markdown", "both"], default="both")
+    p_scan.add_argument("--no-semgrep", action="store_true", help="Disable the semgrep pre-filter; analyze every function with the AI engine.")
+    p_scan.add_argument("--semgrep-config", default=None, help="Override the semgrep ruleset (default: 'auto', or SEMGREP_CONFIG in .env).")
     p_scan.set_defaults(func=_cmd_scan)
 
     p_load = sub.add_parser("bench-load", help="Load a labeled-vulnerability dataset into the local duckdb.")
