@@ -19,6 +19,9 @@ embeddings = [
     "sentence-transformers>=3.0.0",
     "numpy>=1.24",
 ]
+semgrep = [
+    "semgrep>=1.70.0",
+]
 
 [project.scripts]
 vulnscan = "vulnscan.cli:main"

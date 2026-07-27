@@ -209,3 +209,34 @@ class RepoFinding(BaseModel):
     location: RepoLocation
     finding: Finding
     verification: Optional[VerificationResult] = None
+
+
+class StaticFinding(BaseModel):
+    """A raw finding straight from the Semgrep pre-filter — no LLM involved.
+
+    This exists as its own type (not squeezed into Finding) because it's a
+    fundamentally different kind of claim: a rule matched a pattern, full
+    stop. There's no reachability proof, no confidence score, no
+    justification levels — those concepts only make sense for the AI
+    engine's output. Keeping it separate means a scan run with zero LLM
+    budget (e.g. no API credits) still produces real, honestly-labeled
+    findings instead of nothing.
+    """
+
+    location: RepoLocation
+    rule_id: str
+    message: str
+    severity: Severity
+    cwe_ids: list[str] = Field(default_factory=list)
+
+
+class ScanReport(BaseModel):
+    """Full output of a repo scan: both the free, instant static findings and
+    (if the AI engine ran) the reachability-verified findings — sourced from
+    two different engines. Keeping this explicit rather than merging both
+    into one flat findings list at the merge point makes it easy to tell,
+    per finding, whether a human should trust it as "pattern definitely
+    matched" (static) vs "a model reasoned its way to this" (AI)."""
+
+    static_findings: list[StaticFinding] = Field(default_factory=list)
+    ai_findings: list[RepoFinding] = Field(default_factory=list)

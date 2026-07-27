@@ -44,6 +44,14 @@ class Settings:
     embedding_index_dir: str = os.environ.get("EMBEDDING_INDEX_DIR", "data/cve_index")
     retrieval_top_k: int = int(os.environ.get("RETRIEVAL_TOP_K", "5"))
 
+    # Semgrep static-analysis pre-filter (optional — see src/vulnscan/rules/).
+    # Requires the `semgrep` CLI on PATH; if it's not installed, this quietly
+    # no-ops and every function goes straight to the AI engine, same as before
+    # this feature existed.
+    enable_semgrep_prefilter: bool = os.environ.get("ENABLE_SEMGREP_PREFILTER", "true").strip().lower() in ("1", "true", "yes")
+    semgrep_config: str = os.environ.get("SEMGREP_CONFIG", "auto")
+    semgrep_timeout: int = int(os.environ.get("SEMGREP_TIMEOUT", "300"))
+
 
 settings = Settings()
 
