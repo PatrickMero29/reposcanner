@@ -1,6 +1,7 @@
 from vulnscan.rules.semgrep_runner import SemgrepFinding
 from vulnscan.scanner.scan_repo import _findings_overlapping_chunk, _group_semgrep_findings_by_file
 
+#Might be unnecessary now
 
 def _finding(path: str, start: int, end: int) -> SemgrepFinding:
     return SemgrepFinding(

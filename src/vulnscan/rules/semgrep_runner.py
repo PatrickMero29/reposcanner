@@ -73,10 +73,16 @@ def _extract_cwe_ids(raw_cwe_field) -> list[str]:  # noqa: ANN001
 def run_semgrep(
     target_path: str,
     *,
-    config: str = "auto",
+    config: str | list[str] = "auto",
     timeout: int = 300,
 ) -> list[SemgrepFinding]:
     """Run semgrep against target_path and return parsed findings.
+
+    config accepts either a single ruleset string ("p/security-audit"), a
+    comma-separated string ("p/security-audit,p/secrets"), or a list of
+    rulesets — all get passed to semgrep as repeated --config flags in one
+    invocation (semgrep natively supports combining multiple rulesets this
+    way), so results reflect ALL of them, not just the last one.
 
     Never raises: any failure (semgrep not installed, timeout, bad JSON,
     non-zero exit for a real error) is logged and results in an empty list,
@@ -91,16 +97,27 @@ def run_semgrep(
         )
         return []
 
+    if isinstance(config, str):
+        configs = [c.strip() for c in config.split(",") if c.strip()]
+    else:
+        configs = list(config)
+    if not configs:
+        configs = ["auto"]
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         json_out_path = Path(tmp_dir) / "semgrep_out.json"
-        cmd = [
-            "semgrep", "scan",
-            "--config", config,
-            "--json-output", str(json_out_path),
-            "--quiet",
-            "--metrics=off",
-            target_path,
-        ]
+        cmd = ["semgrep", "scan"]
+        for c in configs:
+            cmd += ["--config", c]
+        cmd += ["--json-output", str(json_out_path), "--quiet", target_path]
+        # semgrep's "auto" config mode requires metrics/telemetry enabled (it
+        # phones home to pick rulesets based on the repo) — --metrics=off is
+        # only safe to add when "auto" isn't one of the requested rulesets.
+        # Since offline/no-telemetry operation matters here, the default
+        # config is a fixed ruleset (see config.py), not "auto" — but this
+        # stays defensive in case a caller explicitly includes "auto".
+        if "auto" not in configs:
+            cmd.append("--metrics=off")
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -147,5 +164,5 @@ def run_semgrep(
             cwe_ids=_extract_cwe_ids(extra.get("metadata", {}).get("cwe")),
         ))
 
-    logger.info("semgrep found %d result(s) in %s", len(findings), target_path)
+    logger.info("semgrep found %d result(s) in %s (rulesets: %s)", len(findings), target_path, ", ".join(configs))
     return findings

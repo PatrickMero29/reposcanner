@@ -1,4 +1,4 @@
-# vulnscan
+# RepoScanner
 
 A multi-language, Claude-powered vulnerability scanner, built as a generalization of
 [ZeroPath's opus-benchmark](https://github.com/ZeroPathAI/opus-benchmark). It has two modes that
@@ -12,6 +12,8 @@ share one analyzer core:
 
 Currently supports **Python** only. Adding a language means writing one new chunker
 (see "Adding a language" below) — nothing else in the pipeline needs to change.
+
+Eveyrthing is open to change
 
 ## Why the architecture differs from the original repo
 
@@ -137,12 +139,18 @@ recall with/without the pre-filter):
 vulnscan scan /path/to/repo --no-semgrep
 ```
 
-Override the ruleset (default `auto`, which pulls Semgrep's registry rules — needs internet on
-first run):
+Override the ruleset (default `p/security-audit` — a broad, free, no-login registry pack;
+first run needs internet to fetch it, cached afterward). Note: semgrep's `auto` config mode
+requires telemetry/metrics enabled (it phones home to pick rulesets for you), which conflicts
+with this project's no-telemetry-by-default posture — that's why `auto` isn't the default here,
+even though it's what most semgrep docs show as the first example. You can still opt into it
+explicitly if you want:
 
 ```bash
-vulnscan scan /path/to/repo --semgrep-config p/security-audit
-# or point at a local rule file / directory of your own rules:
+# opt into semgrep's registry auto-selection (requires telemetry enabled):
+vulnscan scan /path/to/repo --semgrep-config auto
+# or point at a specific registry pack or your own local rule file/directory:
+vulnscan scan /path/to/repo --semgrep-config p/owasp-top-ten
 vulnscan scan /path/to/repo --semgrep-config ./my_rules.yaml
 ```
 

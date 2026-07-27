@@ -49,7 +49,11 @@ class Settings:
     # no-ops and every function goes straight to the AI engine, same as before
     # this feature existed.
     enable_semgrep_prefilter: bool = os.environ.get("ENABLE_SEMGREP_PREFILTER", "true").strip().lower() in ("1", "true", "yes")
-    semgrep_config: str = os.environ.get("SEMGREP_CONFIG", "auto")
+    # "auto" requires metrics/telemetry enabled (it phones home to pick
+    # rulesets for you) — defaulting to a fixed registry pack instead keeps
+    # this fully no-telemetry by default. p/security-audit is a broad,
+    # free, no-login-required ruleset covering many languages.
+    semgrep_config: str = os.environ.get("SEMGREP_CONFIG", "p/security-audit")
     semgrep_timeout: int = int(os.environ.get("SEMGREP_TIMEOUT", "300"))
 
 

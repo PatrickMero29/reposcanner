@@ -85,7 +85,7 @@ async def scan_repo(
     extensions: tuple[str, ...] = (".py",),
     max_concurrency: int | None = None,
     use_semgrep_prefilter: bool | None = None,
-    semgrep_config: str | None = None,
+    semgrep_config: str | list[str] | None = None,
 ) -> ScanReport:
     repo = Path(repo_path).resolve()
     if not repo.exists():
@@ -209,7 +209,12 @@ def main() -> None:
     parser.add_argument("--out", default="scan_report", help="Output file basename (no extension).")
     parser.add_argument("--format", choices=["json", "markdown", "both"], default="both")
     parser.add_argument("--no-semgrep", action="store_true", help="Disable the semgrep pre-filter; analyze every function.")
-    parser.add_argument("--semgrep-config", default=None, help="Override the semgrep ruleset (default: 'auto', or SEMGREP_CONFIG in .env).")
+    parser.add_argument(
+        "--semgrep-config", action="append", default=None,
+        help="Semgrep ruleset (default: 'p/security-audit', or SEMGREP_CONFIG in .env). "
+             "Repeat this flag to combine multiple rulesets in one scan, or pass one "
+             "comma-separated value.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

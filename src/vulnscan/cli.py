@@ -89,7 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--out", default="scan_report")
     p_scan.add_argument("--format", choices=["json", "markdown", "both"], default="both")
     p_scan.add_argument("--no-semgrep", action="store_true", help="Disable the semgrep pre-filter; analyze every function with the AI engine.")
-    p_scan.add_argument("--semgrep-config", default=None, help="Override the semgrep ruleset (default: 'auto', or SEMGREP_CONFIG in .env).")
+    p_scan.add_argument(
+        "--semgrep-config", action="append", default=None,
+        help="Semgrep ruleset (default: 'p/security-audit', or SEMGREP_CONFIG in .env). "
+             "Repeat this flag to combine multiple rulesets in one scan, e.g. "
+             "--semgrep-config p/security-audit --semgrep-config p/secrets — or pass one "
+             "comma-separated value.",
+    )
     p_scan.set_defaults(func=_cmd_scan)
 
     p_load = sub.add_parser("bench-load", help="Load a labeled-vulnerability dataset into the local duckdb.")
