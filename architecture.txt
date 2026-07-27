@@ -1,0 +1,526 @@
+RepoScanner as a security-specific retrieval + classifier system.
+
+              High-level architecture
+                     Repository
+                          │
+                          ▼
+                Multi-language Parser
+            (tree-sitter for every language)
+                          │
+                          ▼
+                 Intermediate AST / CFG
+                          │
+        ┌─────────────────┴─────────────────┐
+        ▼                                   ▼
+ Rule Engine                        AI Engine
+ (Fast)                            (Deep Analysis)
+ Semgrep-like                    Transformer Model
+ Regex                           Graph Model
+ AST rules                       Vulnerability classifier
+        │                                   │
+        └──────────────┬────────────────────┘
+                       ▼
+              Candidate Vulnerabilities
+                       │
+                       ▼
+              CVE Retrieval Engine
+             (Vector Database + BM25)
+                       │
+                       ▼
+          Rank Similar Known Vulnerabilities
+                       │
+                       ▼
+                Evidence + Explanation
+                       │
+                       ▼
+                  Final Report
+
+The AI is only invoked for suspicious code instead of every line, making it dramatically faster.
+
+Phase 1: Language-independent parser
+
+Don't write custom parsers.
+
+Use Tree-sitter.
+
+Python
+Java
+JavaScript
+TypeScript
+Rust
+Go
+C
+C++
+C#
+PHP
+Ruby
+Swift
+Kotlin
+
+Tree-sitter converts every language into a common AST.
+
+function login(user,password){
+
+}
+
+becomes
+
+Function
+ ├── Parameters
+ ├── Body
+ └── Calls
+
+regardless of language.
+
+This makes your AI language-agnostic.
+
+Phase 2: Normalize code
+
+Instead of feeding raw code to the model...
+
+db.execute(
+   "SELECT * FROM users WHERE name='" + username + "'"
+)
+
+convert it into something like
+
+CALL execute
+
+ARG:
+BinaryExpression
+
+Contains:
+SQL
+StringConcatenation
+UserInput
+
+This dramatically improves generalization.
+
+Phase 3: Build a vulnerability dataset
+
+Combine:
+
+CVEs
+
+NVD
+
+GitHub Security Advisories
+
+MITRE
+
+CISA KEV
+
+ExploitDB
+
+OSS-Fuzz
+
+Linux Kernel CVEs
+
+Apache CVEs
+
+Chromium
+
+Firefox
+
+OpenSSL
+
+etc.
+
+Each CVE gives:
+
+before patch
+
+after patch
+
+description
+
+severity
+
+CWE
+
+
+
+Also scrape:
+
+Git commits fixing CVEs
+
+GitHub patches
+
+Security advisories
+
+Semgrep rules
+
+CodeQL queries
+
+Now every vulnerability has
+
+Vulnerable code
+
+Fixed code
+
+Explanation
+
+Language
+
+CWE
+
+CVE
+
+Severity
+
+Phase 4: Create embeddings
+
+Every vulnerable snippet becomes an embedding.
+
+Code
+
+↓
+
+Encoder
+
+↓
+
+768-dimensional vector
+
+Store inside
+
+FAISS
+
+or
+
+Qdrant
+
+or
+
+Milvus
+
+Then RepoScanner can do
+
+new code
+
+↓
+
+embedding
+
+↓
+
+nearest neighbors
+
+↓
+
+Top 20 similar CVEs
+
+This gives immediate explainability.
+
+
+Phase 5: Train a classifier
+
+Instead of asking
+
+"Is this vulnerable?"
+
+train
+
+Input:
+
+Code
+
+Output:
+
+No vulnerability
+
+SQL Injection
+
+XSS
+
+Buffer Overflow
+
+Command Injection
+
+Path Traversal
+
+XXE
+
+SSRF
+
+Integer Overflow
+
+Use-after-free
+
+Race Condition
+
+etc.
+
+Multi-class classification.
+
+
+Phase 6: Confidence estimation
+
+Model output
+
+SQL Injection
+
+96%
+
+Nearest:
+
+CVE-2023-xxxx
+
+Similarity
+
+0.94
+
+Now users trust the result.
+
+
+Phase 7: Add reasoning
+
+Once a vulnerability is detected:
+
+Retrieve
+
+Top 10 similar CVEs
+
+Feed only those into a lightweight reasoning model (or a local instruct model).
+
+Instead of hallucinating, it explains using real evidence.
+
+What I'd train
+
+Avoid GPT-style autoregressive models.
+
+Instead:
+
+Code Encoder
+        +
+Classifier Head
+
+Something like
+
+CodeT5
+
+StarCoder
+
+Qwen2.5-Coder
+
+CodeBERT
+
+ModernBERT
+
+GraphCodeBERT
+
+Then fine-tune.
+
+These are only hundreds of millions to a few billion parameters instead of tens or hundreds of billions.
+
+Even better: GNN + Transformer
+
+Vulnerabilities aren't just text.
+
+They're data flow.
+
+user input
+
+↓
+
+sanitize
+
+↓
+
+execute
+
+↓
+
+database
+
+Represent this as a graph.
+
+Variable
+
+↓
+
+Function
+
+↓
+
+Call
+
+↓
+
+Sink
+
+Train
+
+Transformer
+
++
+
+Graph Neural Network
+
+Many recent security papers show this hybrid approach outperforming plain transformers.
+
+Dataset pipeline
+CVEs
+
+↓
+
+Clone vulnerable repo
+
+↓
+
+Checkout vulnerable commit
+
+↓
+
+Checkout fixed commit
+
+↓
+
+Extract diff
+
+↓
+
+Locate changed functions
+
+↓
+
+Generate positive samples
+
+↓
+
+Generate negative samples
+
+↓
+
+Normalize
+
+↓
+
+Tokenize
+
+↓
+
+Train
+Inference pipeline
+Repository
+
+↓
+
+Detect language
+
+↓
+
+Tree-sitter
+
+↓
+
+AST
+
+↓
+
+Function extraction
+
+↓
+
+Embedding
+
+↓
+
+Vector search
+
+↓
+
+Classifier
+
+↓
+
+Ranking
+
+↓
+
+Explanation
+
+↓
+
+Markdown / SARIF report
+Long-term vision
+
+If I were designing RepoScanner from scratch today, I'd structure it into independent services so each can evolve without retraining everything:
+
+reposcanner/
+│
+├── parser/
+│   ├── tree-sitter
+│   ├── CFG builder
+│   ├── DFG builder
+│
+├── dataset/
+│   ├── CVE downloader
+│   ├── Git patch miner
+│   ├── CWE mappings
+│   ├── sample generator
+│
+├── embedding/
+│   ├── encoder
+│   ├── FAISS
+│   ├── nearest neighbors
+│
+├── training/
+│   ├── tokenizer
+│   ├── trainer
+│   ├── evaluation
+│
+├── inference/
+│   ├── vulnerability classifier
+│   ├── ranking
+│   ├── explanation
+│
+├── reporting/
+│   ├── HTML
+│   ├── SARIF
+│   ├── Markdown
+│   ├── JSON
+│
+└── cli/
+
+This keeps the parser, retrieval engine, model training, inference, and reporting loosely coupled.
+
+One suggestion that could make RepoScanner stand out
+
+Most scanners answer "Is this code vulnerable?" A more useful goal is to answer "Show me exactly why, where this has happened before, and how to fix it."
+
+That means every finding would include:
+
+The vulnerable code location.
+The predicted CWE.
+Similar historical CVEs and patches.
+A confidence score.
+A minimal safe patch suggestion.
+An explanation of the underlying data flow (e.g., "User-controlled input reaches exec() without sanitization").
+Brainstorming w/some models.
+
+
+
+Claude thoughts:
+1. CVE embedding + retrieval — build this now, on top of what you already have.
+You already have a CVEfixes loader in the current repo. Adding an embedding index (FAISS or even just Chroma) over vulnerable/fixed function pairs is genuinely low-effort, low-risk, and immediately useful — it gives you nearest-neighbor CVE evidence for any function you scan. You can layer this under Claude today: instead of asking Claude "is this vulnerable?" cold, you retrieve the 5 most similar historical CVEs and hand those to Claude as grounding context. This also cuts your token cost, since you're not re-deriving CWE taxonomy knowledge every call. This part of the plan I'd start on immediately — it doesn't require abandoning anything you've built.
+
+2. Rule engine as a fast pre-filter — also very doable, and it directly solves your cost problem.
+Wrapping Semgrep (it's free, open-source, and already has thousands of community rules across every language you listed) as your Phase-1 filter, then only sending Semgrep's flagged candidates to an LLM for deep reasoning, is the single highest-leverage move here. It's the difference between paying for 9 LLM calls per scan (what you're doing now) and paying for maybe 1-2.
+
+3. The custom classifier — doable, but much narrower than the doc implies.
+Here's where I want to push back a bit. The plan bundles together things that are wildly different in difficulty:
+
+Fine-tuning an existing small code-embedding model (CodeBERT, GraphCodeBERT) for binary vulnerable/not-vulnerable classification on one language — realistic for a solo dev with a decent GPU, maybe weeks of work once the dataset is clean.
+Multi-class CWE classification across 14 languages with a GNN+Transformer hybrid trained on custom CFG/DFG graphs — this is not a bullet point, this is several research papers' worth of work. Building a control-flow/data-flow graph extractor is functionally writing a semantic analyzer per language — tree-sitter only gives you syntax trees, not dataflow. That's the actual hard part of static analysis, and it's the part the plan glosses over in one line ("CFG builder / DFG builder").
+
+There's also a research-literature reality check worth knowing: deep learning vulnerability classifiers have a well-documented generalization problem. Papers critiquing this space (e.g. Chakraborty et al., "Deep Learning based Vulnerability Detection: Are We There Yet?") found that many published models perform barely above chance on code outside their training distribution, largely because CVE datasets have near-duplicate leakage between train/test and models latch onto superficial patterns (like specific function names) rather than actual vulnerability semantics. Training your own model doesn't automatically beat a well-grounded LLM call — it can easily do worse if the dataset isn't built very carefully.
+
+On "costs no money": this isn't quite true. Even a small classifier needs real GPU time — either your own hardware (electricity + wear + your time debugging training runs) or rented GPU time (~$0.30–1/hr for a 24GB card on Vast.ai/RunPod). It's much cheaper than API calls at scale, but it's not free, and the dataset-construction labor (cleaning CVE pairs, generating good negative samples, deduplicating near-identical functions across CVE families so you're not leaking test data) is the actual bulk of the work — likely more total time than the model training itself.
+
+My honest recommended sequence:
+
+Ship the embedding/retrieval layer now — cheap, fast, immediately makes your existing tool better.
+Add Semgrep as the pre-filter — solves your cost problem directly, today.
+Then, if you still want to train something, start narrow: one language, binary classification, using a pretrained encoder (CodeBERT/GraphCodeBERT) rather than training from scratch. Treat it as a fast pre-filter that runs before the LLM, not a replacement for it.
+Only reach for CFG/DFG/GNN work if step 3 proves the narrower version is worth the investment — that's the point to reconsider scope, not the starting point.
