@@ -7,6 +7,8 @@
 # Assumes the dataset has already been loaded (see README "Benchmark mode"),
 # and ANTHROPIC_API_KEY is set (directly or via .env).
 
+# Replace with logic for own model soon
+
 set -euo pipefail
 
 LEVEL="${1:?Usage: run_experiment.sh <level> <run_number>  (level: no_justification|limited_justification|extensive_justification|verification_agent)}"

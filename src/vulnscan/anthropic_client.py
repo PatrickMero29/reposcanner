@@ -7,6 +7,8 @@ single tool, `tool_choice` forces Claude to call that tool, and the tool
 call's `input` dict is what we validate back into the Pydantic model. This
 is the standard pattern for extracting structured data from Claude, and it
 means every call here always returns a schema-valid object or raises.
+
+Replace with logic for own model soon
 """
 
 from __future__ import annotations

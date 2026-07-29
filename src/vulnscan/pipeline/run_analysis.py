@@ -6,6 +6,8 @@ pair, at a given justification level. Mirrors the original repo's
 Output: one JSON file per run under
     data/experiments/<level>/runs/<run_number>/analysis.json
 containing a flat list of {pair_id, variant: "before"|"after", findings: [...]}.
+
+Replace with logic for own model soon
 """
 
 from __future__ import annotations
