@@ -4,20 +4,5 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
-build/
-dist/
+hashcat-7.1.2/
 
-# Datasets and run outputs are large / regeneratable — don't commit by default.
-data/*.duckdb
-data/experiments/
-data/cve_index/
-*.duckdb.wal
-
-# Scan output reports (any --out name)
-*_report.json
-*_report.md
-scan_report.json
-scan_report.md
-
-.pytest_cache/
-.mypy_cache/

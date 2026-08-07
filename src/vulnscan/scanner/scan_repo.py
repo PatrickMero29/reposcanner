@@ -1,10 +1,11 @@
 """Scan an arbitrary local repo directory for vulnerabilities using a
 two-stage pipeline: Semgrep runs first as a fast, free, local pre-filter;
-only functions it flags get sent to the (currently Claude, eventually a
-custom-trained model) AI engine for deep, reachability-verified analysis.
+only functions it flags get sent to your locally-trained classifier (see
+src/vulnscan/local_model/) for the AI-engine stage. No paid API involved
+anywhere in this path.
 
 Usage (also exposed via cli.py):
-    python -m vulnscan.scanner.scan_repo /path/to/repo --level extensive
+    python -m vulnscan.scanner.scan_repo /path/to/repo
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from ..analyzer import analyze
 from ..chunking import chunk_source_file
 from ..config import settings
 from ..rules.semgrep_runner import SemgrepFinding, run_semgrep
-from ..schemas import JustificationLevel, RepoFinding, RepoLocation, ScanReport, Severity, StaticFinding
+from ..schemas import RepoFinding, RepoLocation, ScanReport, Severity, StaticFinding
 from .report_json import write_json_report
 from .report_markdown import write_markdown_report
 
@@ -81,7 +82,6 @@ def _findings_overlapping_chunk(
 async def scan_repo(
     repo_path: str,
     *,
-    level: JustificationLevel = JustificationLevel.EXTENSIVE,
     extensions: tuple[str, ...] = (".py",),
     max_concurrency: int | None = None,
     use_semgrep_prefilter: bool | None = None,
@@ -130,7 +130,7 @@ async def scan_repo(
         for sf in semgrep_findings
     ]
 
-    # --- Stage 2: AI engine, only on flagged functions (when prefilter is active) ---
+    # --- Stage 2: local classifier, only on flagged functions (when prefilter is active) ---
     semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrency)
     ai_findings: list[RepoFinding] = []
     skipped_count = 0
@@ -142,7 +142,7 @@ async def scan_repo(
 
         if prefilter_active and not matching:
             skipped_count += 1
-            return  # semgrep ran and found nothing here — skip the AI call entirely
+            return  # semgrep ran and found nothing here — skip the local model call entirely
 
         async with semaphore:
             try:
@@ -150,7 +150,6 @@ async def scan_repo(
                     code=chunk.code,
                     function_name=chunk.function_name,
                     language=chunk.language,
-                    level=level,
                     static_findings=matching or None,
                 )
             except Exception:
@@ -179,13 +178,13 @@ async def scan_repo(
 
     if prefilter_active:
         logger.info(
-            "Semgrep flagged %d location(s); analyzing %d function chunks with the AI engine "
+            "Semgrep flagged %d location(s); analyzing %d function chunks with the local model "
             "(concurrency=%d)...",
             len(semgrep_findings), len(tasks), max_concurrency or settings.max_concurrency,
         )
     else:
         logger.info(
-            "No semgrep pre-filter signal — analyzing all %d function chunks with the AI engine "
+            "No semgrep pre-filter signal — analyzing all %d function chunks with the local model "
             "(concurrency=%d)...",
             len(tasks), max_concurrency or settings.max_concurrency,
         )
@@ -193,19 +192,14 @@ async def scan_repo(
     await asyncio.gather(*tasks)
 
     if prefilter_active and skipped_count:
-        logger.info("Semgrep pre-filter skipped the AI call for %d function(s) it did not flag.", skipped_count)
+        logger.info("Semgrep pre-filter skipped the local model call for %d function(s) it did not flag.", skipped_count)
 
     return ScanReport(static_findings=static_findings, ai_findings=ai_findings)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scan a local repo for vulnerabilities with a semgrep pre-filter + Claude.")
+    parser = argparse.ArgumentParser(description="Scan a local repo for vulnerabilities with a semgrep pre-filter + your local model.")
     parser.add_argument("repo_path", help="Path to the repo to scan.")
-    parser.add_argument(
-        "--level", choices=[l.value for l in JustificationLevel],
-        default=JustificationLevel.EXTENSIVE.value,
-        help="How rigorous a reachability proof to require (default: extensive).",
-    )
     parser.add_argument("--out", default="scan_report", help="Output file basename (no extension).")
     parser.add_argument("--format", choices=["json", "markdown", "both"], default="both")
     parser.add_argument("--no-semgrep", action="store_true", help="Disable the semgrep pre-filter; analyze every function.")
@@ -220,12 +214,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     report = asyncio.run(scan_repo(
-        args.repo_path, level=JustificationLevel(args.level),
+        args.repo_path,
         use_semgrep_prefilter=not args.no_semgrep, semgrep_config=args.semgrep_config,
     ))
 
     logger.info(
-        "Found %d static finding(s) and %d AI-verified finding(s).",
+        "Found %d static finding(s) and %d local-model finding(s).",
         len(report.static_findings), len(report.ai_findings),
     )
     if args.format in ("json", "both"):

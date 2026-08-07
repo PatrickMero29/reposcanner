@@ -1,4 +1,6 @@
-"""Thin wrapper around google-genai for structured-output calls with retries."""
+"""
+No longer in use here if anyone wants to test things with this architecture in mind
+"""
 
 from __future__ import annotations
 

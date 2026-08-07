@@ -12,23 +12,9 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    anthropic_api_key: str = os.environ.get("ANTHROPIC_API_KEY", "")
-
-    # Reasoning-heavy model for the analyzer. Override with a cheaper/faster
-    # model to cut cost during development.
-    analyzer_model: str = os.environ.get("ANALYZER_MODEL", "claude-sonnet-5")
-
-    # Separate, typically cheaper/faster, model for the verification-agent
-    # pass and the benchmark's CVE judge.
-    verifier_model: str = os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
-
-    max_output_tokens: int = int(os.environ.get("MAX_OUTPUT_TOKENS", "8192"))
-    temperature: float = float(os.environ.get("MODEL_TEMPERATURE", "0.0"))
-
-    # Retries for transient API errors (rate limits, 5xx).
-    max_retries: int = int(os.environ.get("VULNSCAN_MAX_RETRIES", "5"))
-
-    # Concurrency for scanning/benchmark runs.
+    # Concurrency for scanning runs (local model inference — bounded by your
+    # GPU, not an API rate limit; keep this modest unless you know your VRAM
+    # comfortably fits multiple concurrent forward passes).
     max_concurrency: int = int(os.environ.get("VULNSCAN_MAX_CONCURRENCY", "4"))
 
     dataset_db_path: str = os.environ.get("VULNSCAN_DATASET_DB", "data/cvefixes.duckdb")
@@ -46,24 +32,28 @@ class Settings:
 
     # Semgrep static-analysis pre-filter (optional — see src/vulnscan/rules/).
     # Requires the `semgrep` CLI on PATH; if it's not installed, this quietly
-    # no-ops and every function goes straight to the AI engine, same as before
-    # this feature existed.
+    # no-ops and every function goes straight to the local model.
     enable_semgrep_prefilter: bool = os.environ.get("ENABLE_SEMGREP_PREFILTER", "true").strip().lower() in ("1", "true", "yes")
     # "auto" requires metrics/telemetry enabled (it phones home to pick
     # rulesets for you) — defaulting to a fixed registry pack instead keeps
-    # this fully no-telemetry by default. p/security-audit is a broad,
-    # free, no-login-required ruleset covering many languages.
+    # this fully no-telemetry by default.
     semgrep_config: str = os.environ.get("SEMGREP_CONFIG", "p/security-audit")
     semgrep_timeout: int = int(os.environ.get("SEMGREP_TIMEOUT", "300"))
 
+    # Local trained classifier (see src/vulnscan/local_model/ and
+    # src/vulnscan/training/). Requires the `ml` install extra (torch +
+    # transformers). If no checkpoint exists at this path yet, the scanner
+    # runs fine without it — you just get Semgrep's static findings until
+    # you train a model with `vulnscan train-model`.
+    local_model_checkpoint_dir: str = os.environ.get("LOCAL_MODEL_CHECKPOINT_DIR", "models/vuln-classifier")
+    local_model_base: str = os.environ.get("LOCAL_MODEL_BASE", "microsoft/codebert-base")
+    # "auto" resolves to cuda if available, else cpu, at inference time
+    # (checked lazily inside local_model/inference.py — config.py itself
+    # never imports torch, so it stays a light import even without the `ml`
+    # extra installed).
+    local_model_device: str = os.environ.get("LOCAL_MODEL_DEVICE", "auto")
+    local_model_max_length: int = int(os.environ.get("LOCAL_MODEL_MAX_LENGTH", "512"))
+    local_model_confidence_threshold: float = float(os.environ.get("LOCAL_MODEL_CONFIDENCE_THRESHOLD", "0.5"))
+
 
 settings = Settings()
-
-
-def require_api_key() -> str:
-    if not settings.anthropic_api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Export it or put it in a .env file "
-            "(see .env.example)."
-        )
-    return settings.anthropic_api_key

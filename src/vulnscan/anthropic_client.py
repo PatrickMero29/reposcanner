@@ -1,14 +1,5 @@
-"""Thin wrapper around the Anthropic API for structured-output calls with retries.
-
-Claude doesn't have a native `response_schema` parameter the way Gemini's
-structured-output mode does. Instead, structured output is obtained via
-*forced tool use*: the target Pydantic schema is exposed to Claude as a
-single tool, `tool_choice` forces Claude to call that tool, and the tool
-call's `input` dict is what we validate back into the Pydantic model. This
-is the standard pattern for extracting structured data from Claude, and it
-means every call here always returns a schema-valid object or raises.
-
-Replace with logic for own model soon
+"""
+No longer in use here if anyone wants to test things with this architecture in mind
 """
 
 from __future__ import annotations
