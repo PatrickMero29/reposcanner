@@ -78,14 +78,14 @@ def _write_ai_finding(lines: list[str], i: int, rf: RepoFinding) -> None:
 def write_markdown_report(report: ScanReport, path: str) -> None:
     lines: list[str] = ["# Vulnerability Scan Report", ""]
 
-    lines.append(f"**AI-verified findings:** {len(report.ai_findings)}")
+    lines.append(f"**Local-model findings:** {len(report.ai_findings)}")
     lines.append(f"**Static (semgrep) findings:** {len(report.static_findings)}")
     lines.append("")
 
     if report.ai_findings:
-        lines.append("## AI-Verified Findings")
+        lines.append("## Local Model Findings")
         lines.append("")
-        lines.append("Reachability-verified by the AI engine (Claude), grounded in static-analysis "
+        lines.append("Flagged by the local classifier, grounded in static-analysis "
                       "context and/or similar known CVEs where available.")
         lines.append("")
         _write_severity_table(lines, _severity_counts(report.ai_findings, lambda rf: rf.finding.undesired_operation.severity))

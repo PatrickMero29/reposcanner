@@ -2,8 +2,8 @@
 
 This is the "Rule Engine (Fast)" half of the two-stage architecture: Semgrep
 runs first, entirely locally, and flags candidate lines/functions. Only
-flagged functions get sent to the (currently Claude, eventually a trained
-model) "AI Engine (Deep Analysis)" — everything else is skipped, which is
+flagged functions get sent to your locally-trained classifier (the "AI
+Engine (Deep Analysis)" stage) — everything else is skipped, which is
 where the actual cost/time savings come from.
 
 Semgrep is a separate CLI tool, not a Python-importable library, so this
