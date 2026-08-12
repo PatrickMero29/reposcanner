@@ -6,3 +6,9 @@ venv/
 *.egg-info/
 hashcat-7.1.2/
 
+# Model Weights and Checkpoints
+*.safetensors
+*.pt
+*.pth
+*.bin
+checkpoint-*/
