@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
-hashcat-7.1.2/
+CVEfixes_v1.0.8sql.gz
 
 # Model Weights and Checkpoints
 *.safetensors
@@ -12,3 +12,7 @@ hashcat-7.1.2/
 *.pth
 *.bin
 checkpoint-*/
+
+*.db
+*.duckdb
+*.gz
