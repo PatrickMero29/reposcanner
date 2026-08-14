@@ -7,6 +7,8 @@ compressed_path = "CVEfixes_v1.0.8.sql.gz"
 compressed_total = os.path.getsize(compressed_path)
 
 decompressed_sample_size = 0
+compressed_sample_size = 0
+
 with open(compressed_path, "rb") as raw:
     with gzip.GzipFile(fileobj=raw) as f:
         while True:
@@ -14,14 +16,11 @@ with open(compressed_path, "rb") as raw:
             if not chunk:
                 break
             decompressed_sample_size += len(chunk)
-            # Stop once we've decompressed enough to get a reliable ratio,
-            # without decompressing the whole multi-GB file just to measure it.
             if raw.tell() >= SAMPLE_BYTES:
                 break
+    compressed_sample_size = raw.tell()
 
-compressed_sample_size = raw.tell()
 ratio = decompressed_sample_size / compressed_sample_size
-
 estimated_decompressed_total = compressed_total * ratio
 
 print(f"Compressed file size:        {compressed_total / 1e9:.2f} GB")
