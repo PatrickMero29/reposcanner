@@ -227,38 +227,47 @@ def train_model_pairwise(
     filter_truncation_collisions: bool = True,
     log_every: int = 10,
     seed: int = 42,
-    # See fetch_codesearchnet_negatives.py and dataset.load_generic_negatives.
-    # Every existing "not vulnerable" example is a specific CVE's fixed
-    # version, 1-3 lines after the bug -- the model never sees a broadly
-    # diverse population of code that was never near a CVE. If set, this
-    # augments TRAINING data (not validation, to keep val_ranking_accuracy
-    # comparable across runs) with synthetic pairs: a real vulnerable
-    # ("before") snippet paired against a randomly sampled generic-safe
-    # snippet, reusing the same MarginRankingLoss machinery -- the model is
-    # trained to still rank the real vulnerable code above the generic
-    # negative. This is a weak label, not ground truth (see fetch script).
     generic_negatives_path: str | None = None,
-    # Number of synthetic pairs added = generic_negative_ratio * len(train_pairs).
     generic_negative_ratio: float = 1.0,
+    # Weight on the absolute cross-entropy anchor term (see docstring below).
+    # 0.0 reproduces the pure-ranking v5/v6 behavior; don't set it to 0 unless
+    # you specifically want to reproduce that calibration-drift failure mode.
+    ce_weight: float = 1.0,
+    # DataLoader workers for the (now-cheap) collate step. Default 0 is safest
+    # on Windows -- if you raise this, the script calling train_model_pairwise
+    # must be guarded with `if __name__ == "__main__":`, since Windows uses
+    # spawn-based multiprocessing and will otherwise re-import (and re-run)
+    # your whole script in each worker process.
+    num_workers: int = 0,
+    # Mixed precision on CUDA (torch.autocast + GradScaler) -- roughly halves
+    # step time on modern NVIDIA GPUs with no accuracy trade-off; loss scaling
+    # handles the numerical stability. Auto-disabled on CPU regardless of
+    # this flag. None = auto (on for CUDA, off for CPU).
+    use_amp: bool | None = None,
 ) -> str:
-    """Trains the classifier with a pairwise margin-ranking objective instead
-    of train_model()'s independent binary classification.
+    """Trains the classifier with a pairwise margin-ranking objective PLUS an
+    absolute cross-entropy anchor, instead of train_model()'s independent
+    binary classification.
 
-    Why: train_model() classifies func_before and func_after as two
-    unrelated, independent examples. But every "not vulnerable" example in
-    this dataset IS a specific "vulnerable" example, 1-3 lines later, after
-    the fix -- the model never sees a broadly diverse population of unrelated
-    safe code, only "this exact code, minus its one bug." Three separate
-    real training runs (see HANDOFF.md) converged to loss stuck near ln(2)
-    and degenerate always-one-class predictions even after fixing a real
-    truncation-collision data bug -- the independent-classification framing
-    itself isn't giving the model enough to learn from given ~2.4k pairs.
+    History (see HANDOFF.md and this conversation for the full trail):
+    train_model() classifies func_before/func_after independently and never
+    converged -- every "not vulnerable" example IS a specific "vulnerable"
+    example, 1-3 lines later, after the fix, so the model never saw a
+    diverse population of unrelated safe code. Pure margin-ranking
+    (train_model_pairwise v5/v6) fixed convergence -- val_ranking_accuracy
+    reached ~0.73 -- but a real problem then showed up in sanity_check.py:
+    both a vulnerable AND a trivially-safe snippet came back flagged at
+    94-99%. MarginRankingLoss only constrains RELATIVE order within a pair
+    (score(before) > score(after)); nothing stops both scores drifting
+    upward together, satisfying the loss while destroying any absolute
+    "this is safe" signal.
 
-    This instead trains the model so that, for every pair,
-    score(before) > score(after), using both halves of the pair together in
-    one loss (MarginRankingLoss). This gives the model direct access to the
-    one signal it was being denied -- a same-function contrast -- instead of
-    asking it to find an absolute decision boundary from isolated snippets.
+    The `ce_weight` term fixes that: alongside the ranking loss, it also
+    trains before_logits toward class 1 and after_logits toward class 0 in
+    the ordinary cross-entropy sense. This anchors the absolute scale while
+    keeping the ranking loss's benefit of exploiting the near-duplicate
+    structure for the fine-grained before/after cases. Set ce_weight=0.0
+    only if you want to deliberately reproduce the v6 drift for comparison.
 
     Compatibility note: this does NOT change inference. The saved checkpoint
     is loaded and used identically to train_model()'s output --
@@ -266,9 +275,12 @@ def train_model_pairwise(
     the training *objective* changes; the model's input/output shape is the
     same AutoModelForSequenceClassification with num_labels=2 as before.
 
-    "vulnerable score" here is logits[:, 1] - logits[:, 0] (the margin
-    between the two classes), not a plain single-class logit -- keeps the
-    score well-defined and comparable across both training and inference.
+    Performance note: unlike the earlier version of this function, all
+    tokenization happens ONCE up front (two batched tokenizer calls total,
+    not one per batch per epoch), before/after pairs are combined into a
+    single forward pass per step instead of two sequential ones, and mixed
+    precision is on by default on CUDA. Same computation, none of it
+    repeated unnecessarily.
     """
     try:
         import torch
@@ -341,33 +353,63 @@ def train_model_pairwise(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Training device: %s%s", device, " (no GPU detected — this will be slow)" if device == "cpu" else "")
+    if use_amp is None:
+        use_amp = device == "cuda"
+    elif use_amp and device != "cuda":
+        logger.info("use_amp=True has no effect on CPU; disabling.")
+        use_amp = False
 
     model = AutoModelForSequenceClassification.from_pretrained(base_model, num_labels=2).to(device)
 
+    # Tokenize everything ONCE, up front, with two batched tokenizer calls
+    # per split (before-side, after-side) rather than per-batch-per-epoch.
+    # The Rust tokenizer is much faster batched than called example-by-example.
+    def _pretokenize(pairs: list) -> tuple[list[dict], list[dict]]:
+        before_batch = tokenizer([p.before_code for p in pairs], truncation=True, max_length=max_length)
+        after_batch = tokenizer([p.after_code for p in pairs], truncation=True, max_length=max_length)
+        before_list = [
+            {"input_ids": before_batch["input_ids"][i], "attention_mask": before_batch["attention_mask"][i]}
+            for i in range(len(pairs))
+        ]
+        after_list = [
+            {"input_ids": after_batch["input_ids"][i], "attention_mask": after_batch["attention_mask"][i]}
+            for i in range(len(pairs))
+        ]
+        return before_list, after_list
+
+    train_before, train_after = _pretokenize(train_pairs)
+    val_before, val_after = _pretokenize(val_pairs) if val_pairs else ([], [])
+
     class _PairDataset(Dataset):
-        def __init__(self, pairs: list) -> None:
-            self.pairs = pairs
+        def __init__(self, before_list: list[dict], after_list: list[dict]) -> None:
+            self.before_list = before_list
+            self.after_list = after_list
 
         def __len__(self) -> int:
-            return len(self.pairs)
+            return len(self.before_list)
 
         def __getitem__(self, idx: int):
-            return self.pairs[idx]
+            return self.before_list[idx], self.after_list[idx]
 
     def _collate(batch):
-        before_enc = tokenizer(
-            [p.before_code for p in batch], truncation=True, max_length=max_length,
+        # Combine before+after into ONE padded batch of size 2*len(batch), so
+        # the model does a single forward pass per step instead of two. Only
+        # padding happens here (cheap); tokenization already happened above.
+        combined_input_ids = [b["input_ids"] for b, _ in batch] + [a["input_ids"] for _, a in batch]
+        combined_attn = [b["attention_mask"] for b, _ in batch] + [a["attention_mask"] for _, a in batch]
+        padded = tokenizer.pad(
+            {"input_ids": combined_input_ids, "attention_mask": combined_attn},
             padding=True, return_tensors="pt",
         )
-        after_enc = tokenizer(
-            [p.after_code for p in batch], truncation=True, max_length=max_length,
-            padding=True, return_tensors="pt",
-        )
-        return before_enc, after_enc
+        return padded, len(batch)
 
-    train_loader = DataLoader(_PairDataset(train_pairs), batch_size=batch_size, shuffle=True, collate_fn=_collate)
+    loader_kwargs = dict(
+        collate_fn=_collate, num_workers=num_workers,
+        pin_memory=(device == "cuda"), persistent_workers=(num_workers > 0),
+    )
+    train_loader = DataLoader(_PairDataset(train_before, train_after), batch_size=batch_size, shuffle=True, **loader_kwargs)
     val_loader = (
-        DataLoader(_PairDataset(val_pairs), batch_size=batch_size, shuffle=False, collate_fn=_collate)
+        DataLoader(_PairDataset(val_before, val_after), batch_size=batch_size, shuffle=False, **loader_kwargs)
         if val_pairs else None
     )
 
@@ -376,65 +418,97 @@ def train_model_pairwise(
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=int(0.06 * total_steps), num_training_steps=total_steps,
     )
-    loss_fn = torch.nn.MarginRankingLoss(margin=margin)
+    rank_loss_fn = torch.nn.MarginRankingLoss(margin=margin)
+    ce_loss_fn = torch.nn.CrossEntropyLoss()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     def _vuln_score(logits):
         return logits[:, 1] - logits[:, 0]
 
-    def _run_eval(loader) -> tuple[float, float]:
+    def _forward_combined(padded: dict, batch_size_b: int):
+        """One forward pass over the combined [before; after] batch, split
+        back into before/after halves. Returns logits, not loss, so both the
+        train step and eval step can share this."""
+        logits = model(**padded).logits
+        return logits[:batch_size_b], logits[batch_size_b:]
+
+    def _compute_loss(before_logits, after_logits):
+        before_score = _vuln_score(before_logits)
+        after_score = _vuln_score(after_logits)
+        target = torch.ones_like(before_score)
+        rank_loss = rank_loss_fn(before_score, after_score, target)
+
+        ones = torch.ones(before_logits.size(0), dtype=torch.long, device=before_logits.device)
+        zeros = torch.zeros(after_logits.size(0), dtype=torch.long, device=after_logits.device)
+        ce_loss = (ce_loss_fn(before_logits, ones) + ce_loss_fn(after_logits, zeros)) / 2
+
+        loss = rank_loss + ce_weight * ce_loss
+        return loss, rank_loss, ce_loss, before_score, after_score
+
+    def _run_eval(loader) -> dict:
         model.eval()
         total_loss, correct, total = 0.0, 0, 0
+        before_probs, after_probs = [], []
         with torch.no_grad():
-            for before_enc, after_enc in loader:
-                before_enc = {k: v.to(device) for k, v in before_enc.items()}
-                after_enc = {k: v.to(device) for k, v in after_enc.items()}
-                before_score = _vuln_score(model(**before_enc).logits)
-                after_score = _vuln_score(model(**after_enc).logits)
-                target = torch.ones_like(before_score)
-                total_loss += loss_fn(before_score, after_score, target).item()
+            for padded, b in loader:
+                padded = {k: v.to(device, non_blocking=True) for k, v in padded.items()}
+                with torch.autocast(device_type="cuda", enabled=use_amp):
+                    before_logits, after_logits = _forward_combined(padded, b)
+                    loss, *_ = _compute_loss(before_logits, after_logits)
+                before_score = _vuln_score(before_logits)
+                after_score = _vuln_score(after_logits)
+                total_loss += loss.item()
                 correct += (before_score > after_score).sum().item()
                 total += before_score.numel()
+                # Calibration diagnostic: mean P(vulnerable) in the absolute
+                # sense, not just relative ranking -- this is exactly what
+                # caught the v6 drift (both landing near 1.0 regardless of
+                # which side of the pair they were).
+                before_probs.append(torch.softmax(before_logits, dim=-1)[:, 1].mean().item())
+                after_probs.append(torch.softmax(after_logits, dim=-1)[:, 1].mean().item())
         model.train()
-        avg_loss = total_loss / max(1, len(loader))
-        # Fraction of held-out pairs the model correctly ranks vulnerable > fixed.
-        # This is the meaningful metric for a ranking objective -- there's no
-        # single-example precision/recall here since nothing is classified
-        # independently. 0.5 = chance, 1.0 = perfect ranking.
-        ranking_accuracy = correct / total if total else 0.0
-        return avg_loss, ranking_accuracy
+        n_batches = max(1, len(loader))
+        return {
+            "loss": total_loss / n_batches,
+            "ranking_accuracy": correct / total if total else 0.0,
+            "avg_before_prob_vuln": sum(before_probs) / n_batches,
+            "avg_after_prob_vuln": sum(after_probs) / n_batches,
+        }
 
     step = 0
     for epoch in range(epochs):
         model.train()
         epoch_losses = []
-        for before_enc, after_enc in train_loader:
-            before_enc = {k: v.to(device) for k, v in before_enc.items()}
-            after_enc = {k: v.to(device) for k, v in after_enc.items()}
+        for padded, b in train_loader:
+            padded = {k: v.to(device, non_blocking=True) for k, v in padded.items()}
 
-            before_score = _vuln_score(model(**before_enc).logits)
-            after_score = _vuln_score(model(**after_enc).logits)
-            target = torch.ones_like(before_score)
-            loss = loss_fn(before_score, after_score, target)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type="cuda", enabled=use_amp):
+                before_logits, after_logits = _forward_combined(padded, b)
+                loss, rank_loss, ce_loss, *_ = _compute_loss(before_logits, after_logits)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
 
             epoch_losses.append(loss.item())
             step += 1
             if step % log_every == 0:
                 logger.info(
-                    "step %d (epoch %.3f) loss=%.4f lr=%.3e",
+                    "step %d (epoch %.3f) loss=%.4f (rank=%.4f, ce=%.4f) lr=%.3e",
                     step, epoch + (step % len(train_loader)) / len(train_loader),
-                    loss.item(), scheduler.get_last_lr()[0],
+                    loss.item(), rank_loss.item(), ce_loss.item(), scheduler.get_last_lr()[0],
                 )
 
         train_loss = sum(epoch_losses) / len(epoch_losses)
         summary = f"Epoch {epoch + 1}/{epochs}: train_loss={train_loss:.4f}"
         if val_loader:
-            val_loss, val_ranking_acc = _run_eval(val_loader)
-            summary += f", val_loss={val_loss:.4f}, val_ranking_accuracy={val_ranking_acc:.4f}"
+            m = _run_eval(val_loader)
+            summary += (
+                f", val_loss={m['loss']:.4f}, val_ranking_accuracy={m['ranking_accuracy']:.4f}, "
+                f"val_avg_prob_vuln(before/after)={m['avg_before_prob_vuln']:.3f}/{m['avg_after_prob_vuln']:.3f}"
+            )
         logger.info(summary)
 
     model.save_pretrained(out_dir)
