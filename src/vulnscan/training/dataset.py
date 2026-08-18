@@ -57,3 +57,40 @@ def train_val_split(
     train = [e for e in examples if e.pair_id not in val_pair_ids]
     val = [e for e in examples if e.pair_id in val_pair_ids]
     return train, val
+
+
+@dataclass
+class PairExample:
+    """A (before, after) pair kept together, for pairwise-ranking training
+    (see training/train.py's train_model_pairwise) rather than the
+    independent-classification path above. Each row in the `pairs` table
+    already stores both sides of the fix together, so unlike Example this
+    needs no reconstruction/grouping step.
+    """
+    pair_id: str
+    before_code: str
+    after_code: str
+
+
+def build_pairs(dataset_db_path: str, *, language: str = "python") -> list[PairExample]:
+    pairs = get_pairs(dataset_db_path, language=language)
+    return [
+        PairExample(pair_id=p["pair_id"], before_code=p["func_before"], after_code=p["func_after"])
+        for p in pairs
+        if p.get("func_before") and p.get("func_after")
+    ]
+
+
+def train_val_split_pairs(
+    pairs: list[PairExample], *, val_fraction: float = 0.15, seed: int = 42
+) -> tuple[list[PairExample], list[PairExample]]:
+    rng = random.Random(seed)
+    order = list(range(len(pairs)))
+    rng.shuffle(order)
+
+    val_count = max(1, round(len(pairs) * val_fraction)) if pairs else 0
+    val_idx = set(order[:val_count])
+
+    train = [p for i, p in enumerate(pairs) if i not in val_idx]
+    val = [p for i, p in enumerate(pairs) if i in val_idx]
+    return train, val

@@ -14,10 +14,14 @@ Two loaders are provided:
   * `load_from_cvefixes_sqlite` — converts Fabio Massacci et al.'s CVEfixes
     dataset (distributed as a SQLite DB, see
     https://github.com/secureIT-project/CVEfixes) into the generic shape.
-    CVEfixes' schema has changed across releases, so the column names below
-    are a best-effort mapping — run `inspect_cvefixes_schema()` first against
-    your actual downloaded file and adjust the SELECT in
-    `_CVEFIXES_EXTRACT_SQL` if your version's table/column names differ.
+    The extraction SQL below (`_CVEFIXES_EXTRACT_SQL`) is verified against
+    real data from CVEfixes_v1.0.8 (empirically confirmed via
+    `inspect_cvefixes_schema()` + direct row inspection, not guessed from
+    documentation — see HANDOFF.md Section 2.10 for the full story,
+    including why the schema can't be trusted from docs alone). If you're on
+    a different CVEfixes release and this fails or produces empty/wrong
+    results, run `inspect_cvefixes_schema()` against your file first and
+    diff its table/column names against the SELECT below.
 """
 
 from __future__ import annotations
@@ -106,40 +110,55 @@ def inspect_cvefixes_schema(sqlite_path: str) -> dict[str, list[str]]:
     return schema
 
 
-# Best-effort mapping for the CVEfixes public release schema (method_change /
-# file_change / fixes / cve / commits tables). VERIFY against your actual file
-# with inspect_cvefixes_schema() first — column names have drifted across
-# CVEfixes releases.
+# Verified, empirically-confirmed extraction SQL (see HANDOFF.md Section 2.10).
+# `method_change` stores ONE row per (function, state) — the vulnerable and
+# fixed versions of a function are two separate rows sharing
+# (file_change_id, name), distinguished by before_change = 'True'/'False'
+# (a TEXT column, not a real boolean). This self-joins those two states back
+# into a single before/after pair per row. Confirmed against real data
+# (e.g. CVE-2021-32633's `traverse()`), and matches cve_extract_final.py,
+# the standalone script this was ported from. Produced 2,993 real,
+# manually-spot-checked-correct pairs when run against CVEfixes_meta.db.
 _CVEFIXES_EXTRACT_SQL = """
 SELECT
-    mc.method_change_id                                    AS pair_id,
-    f.cve_id                                                AS cve_id,
-    cc.cwe_id                                               AS cwe_ids,
-    'python'                                                AS language,
-    r.repo_url                                              AS repo,
-    fc.filename                                             AS file_path,
-    mc.name                                                 AS function_name,
-    mc.code                                                 AS func_before,
-    mc.code_after                                           AS func_after,
-    co.msg                                                  AS commit_message,
-    'https://nvd.nist.gov/vuln/detail/' || f.cve_id          AS nvd_url
-FROM cvefixes.method_change mc
-JOIN cvefixes.file_change fc ON mc.file_change_id = fc.file_change_id
-JOIN cvefixes.fixes f ON fc.hash = f.hash
+    mc_before.method_change_id                              AS pair_id,
+    f.cve_id                                                 AS cve_id,
+    cwe.cwe_ids                                              AS cwe_ids,
+    'python'                                                 AS language,
+    f.repo_url                                               AS repo,
+    fc.filename                                              AS file_path,
+    mc_before.name                                           AS function_name,
+    mc_before.code                                           AS func_before,
+    mc_after.code                                            AS func_after,
+    co.msg                                                   AS commit_message,
+    ('https://nvd.nist.gov/vuln/detail/' || f.cve_id)        AS nvd_url
+FROM cvefixes.method_change mc_before
+JOIN cvefixes.method_change mc_after
+    ON mc_before.file_change_id = mc_after.file_change_id
+    AND mc_before.name = mc_after.name
+    AND mc_before.before_change = 'True'
+    AND mc_after.before_change = 'False'
+JOIN cvefixes.file_change fc ON mc_before.file_change_id = fc.file_change_id
 JOIN cvefixes.commits co ON fc.hash = co.hash
-JOIN cvefixes.repository r ON co.repo_url = r.repo_url
-LEFT JOIN cvefixes.cwe_classification cc ON f.cve_id = cc.cve_id
+JOIN cvefixes.fixes f ON fc.hash = f.hash
+LEFT JOIN (
+    SELECT cve_id, GROUP_CONCAT(cwe_id, ',') AS cwe_ids
+    FROM cvefixes.cwe_classification GROUP BY cve_id
+) cwe ON f.cve_id = cwe.cve_id
 WHERE fc.programming_language = 'Python'
-  AND mc.code IS NOT NULL AND mc.code_after IS NOT NULL
+  AND mc_before.code IS NOT NULL AND mc_before.code != ''
+  AND mc_after.code IS NOT NULL AND mc_after.code != ''
 """
 
 
 def load_from_cvefixes_sqlite(sqlite_path: str, duckdb_path: str, *, replace: bool = False) -> int:
-    """Best-effort converter from a downloaded CVEfixes.db into the generic
-    pairs table. If this raises a duckdb.CatalogException/BinderException
-    about a missing table/column, run inspect_cvefixes_schema(sqlite_path)
-    and fix the table/column names in _CVEFIXES_EXTRACT_SQL above to match
-    your release."""
+    """Converter from a downloaded CVEfixes.db into the generic pairs table,
+    using the verified self-join extraction SQL (see module docstring and
+    HANDOFF.md Section 2.10). If this raises a
+    duckdb.CatalogException/BinderException about a missing table/column,
+    you're likely on a CVEfixes release with different table/column names —
+    run inspect_cvefixes_schema(sqlite_path) and adjust
+    _CVEFIXES_EXTRACT_SQL above to match."""
     con = open_db(duckdb_path)
     con.execute("INSTALL sqlite; LOAD sqlite;")
     con.execute(f"ATTACH '{sqlite_path}' AS cvefixes (TYPE sqlite)")
