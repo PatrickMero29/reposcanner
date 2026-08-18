@@ -18,8 +18,9 @@ Usage:
 from __future__ import annotations
 
 import logging
+import random
 
-from .dataset import Example, build_examples, train_val_split
+from .dataset import Example, PairExample, build_examples, train_val_split
 
 logger = logging.getLogger("vulnscan.training")
 
@@ -226,6 +227,19 @@ def train_model_pairwise(
     filter_truncation_collisions: bool = True,
     log_every: int = 10,
     seed: int = 42,
+    # See fetch_codesearchnet_negatives.py and dataset.load_generic_negatives.
+    # Every existing "not vulnerable" example is a specific CVE's fixed
+    # version, 1-3 lines after the bug -- the model never sees a broadly
+    # diverse population of code that was never near a CVE. If set, this
+    # augments TRAINING data (not validation, to keep val_ranking_accuracy
+    # comparable across runs) with synthetic pairs: a real vulnerable
+    # ("before") snippet paired against a randomly sampled generic-safe
+    # snippet, reusing the same MarginRankingLoss machinery -- the model is
+    # trained to still rank the real vulnerable code above the generic
+    # negative. This is a weak label, not ground truth (see fetch script).
+    generic_negatives_path: str | None = None,
+    # Number of synthetic pairs added = generic_negative_ratio * len(train_pairs).
+    generic_negative_ratio: float = 1.0,
 ) -> str:
     """Trains the classifier with a pairwise margin-ranking objective instead
     of train_model()'s independent binary classification.
@@ -270,7 +284,7 @@ def train_model_pairwise(
             '`pip install -e ".[ml]"` to train a model.'
         ) from exc
 
-    from .dataset import build_pairs, train_val_split_pairs
+    from .dataset import build_pairs, load_generic_negatives, train_val_split_pairs
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
 
@@ -300,6 +314,29 @@ def train_model_pairwise(
             raise ValueError("All pairs were filtered out as truncation collisions.")
 
     train_pairs, val_pairs = train_val_split_pairs(pairs, val_fraction=val_fraction, seed=seed)
+
+    if generic_negatives_path:
+        rng = random.Random(seed)
+        generic_negatives = load_generic_negatives(generic_negatives_path)
+        if not generic_negatives:
+            raise ValueError(f"No negatives loaded from {generic_negatives_path!r}.")
+        n_synthetic = round(generic_negative_ratio * len(train_pairs))
+        vulnerable_pool = [p.before_code for p in train_pairs]
+        synthetic = [
+            PairExample(
+                pair_id=f"synthetic:{i}",
+                before_code=rng.choice(vulnerable_pool),
+                after_code=rng.choice(generic_negatives),
+            )
+            for i in range(n_synthetic)
+        ]
+        logger.info(
+            "Augmenting training set with %d synthetic (real-vulnerable, generic-safe) "
+            "pairs from %s (%d unique negatives available).",
+            n_synthetic, generic_negatives_path, len(generic_negatives),
+        )
+        train_pairs = train_pairs + synthetic
+
     logger.info("Training on %d pairs, validating on %d pairs.", len(train_pairs), len(val_pairs))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

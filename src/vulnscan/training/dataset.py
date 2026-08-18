@@ -18,6 +18,7 @@ side of the split.
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 
@@ -94,3 +95,23 @@ def train_val_split_pairs(
     train = [p for i, p in enumerate(pairs) if i not in val_idx]
     val = [p for i, p in enumerate(pairs) if i in val_idx]
     return train, val
+
+
+def load_generic_negatives(path: str) -> list[str]:
+    """Loads a jsonl file of {"code": ...} objects (see
+    fetch_codesearchnet_negatives.py) -- diverse, unrelated "probably safe"
+    code used to augment pairwise training with negatives that aren't just
+    a specific CVE's fixed version. Weak labels, not ground truth -- see
+    that script's docstring for the caveat.
+    """
+    negatives: list[str] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            code = obj.get("code")
+            if code:
+                negatives.append(code)
+    return negatives
