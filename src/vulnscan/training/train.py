@@ -327,29 +327,65 @@ def train_model_pairwise(
 
     train_pairs, val_pairs = train_val_split_pairs(pairs, val_fraction=val_fraction, seed=seed)
 
+    val_generic_pairs: list[PairExample] = []
     if generic_negatives_path:
         rng = random.Random(seed)
         generic_negatives = load_generic_negatives(generic_negatives_path)
         if not generic_negatives:
             raise ValueError(f"No negatives loaded from {generic_negatives_path!r}.")
+
+        # Hold out a slice of negatives that NEVER appears in training, so we
+        # get a real held-out measurement of generalization to generic code
+        # instead of relying on sanity_check.py's two anecdotal examples,
+        # which only tell you about those two specific snippets and can't be
+        # tracked epoch-over-epoch.
+        rng.shuffle(generic_negatives)
+        n_val_negatives = max(1, round(val_fraction * len(generic_negatives)))
+        val_negatives = generic_negatives[:n_val_negatives]
+        train_negatives = generic_negatives[n_val_negatives:]
+        if not train_negatives:
+            raise ValueError(
+                f"Only {len(generic_negatives)} negatives loaded -- not enough left for "
+                "training after holding out a validation slice."
+            )
+
         n_synthetic = round(generic_negative_ratio * len(train_pairs))
         vulnerable_pool = [p.before_code for p in train_pairs]
         synthetic = [
             PairExample(
                 pair_id=f"synthetic:{i}",
                 before_code=rng.choice(vulnerable_pool),
-                after_code=rng.choice(generic_negatives),
+                after_code=rng.choice(train_negatives),
             )
             for i in range(n_synthetic)
         ]
         logger.info(
             "Augmenting training set with %d synthetic (real-vulnerable, generic-safe) "
-            "pairs from %s (%d unique negatives available).",
-            n_synthetic, generic_negatives_path, len(generic_negatives),
+            "pairs from %s (%d train negatives, %d held out for validation).",
+            n_synthetic, generic_negatives_path, len(train_negatives), len(val_negatives),
         )
         train_pairs = train_pairs + synthetic
 
-    logger.info("Training on %d pairs, validating on %d pairs.", len(train_pairs), len(val_pairs))
+        # Held-out generic validation set: real held-out vulnerable code
+        # (from val_pairs, never trained on) vs held-out generic negatives
+        # (also never trained on). This is the metric that actually answers
+        # "does this generalize to arbitrary unrelated code", which neither
+        # val_ranking_accuracy nor a 2-example sanity check can.
+        val_vulnerable_pool = [p.before_code for p in val_pairs]
+        if val_vulnerable_pool and val_negatives:
+            val_generic_pairs = [
+                PairExample(
+                    pair_id=f"val_generic:{i}",
+                    before_code=rng.choice(val_vulnerable_pool),
+                    after_code=neg,
+                )
+                for i, neg in enumerate(val_negatives)
+            ]
+
+    logger.info(
+        "Training on %d pairs, validating on %d CVE pairs + %d generic-negative pairs.",
+        len(train_pairs), len(val_pairs), len(val_generic_pairs),
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Training device: %s%s", device, " (no GPU detected — this will be slow)" if device == "cpu" else "")
@@ -379,6 +415,7 @@ def train_model_pairwise(
 
     train_before, train_after = _pretokenize(train_pairs)
     val_before, val_after = _pretokenize(val_pairs) if val_pairs else ([], [])
+    val_generic_before, val_generic_after = _pretokenize(val_generic_pairs) if val_generic_pairs else ([], [])
 
     class _PairDataset(Dataset):
         def __init__(self, before_list: list[dict], after_list: list[dict]) -> None:
@@ -412,6 +449,10 @@ def train_model_pairwise(
         DataLoader(_PairDataset(val_before, val_after), batch_size=batch_size, shuffle=False, **loader_kwargs)
         if val_pairs else None
     )
+    val_generic_loader = (
+        DataLoader(_PairDataset(val_generic_before, val_generic_after), batch_size=batch_size, shuffle=False, **loader_kwargs)
+        if val_generic_pairs else None
+    )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     total_steps = max(1, len(train_loader) * epochs)
@@ -420,7 +461,7 @@ def train_model_pairwise(
     )
     rank_loss_fn = torch.nn.MarginRankingLoss(margin=margin)
     ce_loss_fn = torch.nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     def _vuln_score(logits):
         return logits[:, 1] - logits[:, 0]
@@ -508,6 +549,19 @@ def train_model_pairwise(
             summary += (
                 f", val_loss={m['loss']:.4f}, val_ranking_accuracy={m['ranking_accuracy']:.4f}, "
                 f"val_avg_prob_vuln(before/after)={m['avg_before_prob_vuln']:.3f}/{m['avg_after_prob_vuln']:.3f}"
+            )
+        if val_generic_loader:
+            g = _run_eval(val_generic_loader)
+            # This is the number that answers "does this generalize to
+            # arbitrary unrelated code" -- neither before/after here has ever
+            # been seen in training. before = held-out real vulnerable code,
+            # after = held-out generic negative (never-trained-on
+            # CodeSearchNet function). Want after_prob_vuln low and
+            # ranking_accuracy high; sanity_check.py's 2-example anecdote is
+            # a spot check on this, not a substitute for it.
+            summary += (
+                f" | held-out generic: ranking_accuracy={g['ranking_accuracy']:.4f}, "
+                f"avg_prob_vuln(vuln/generic_negative)={g['avg_before_prob_vuln']:.3f}/{g['avg_after_prob_vuln']:.3f}"
             )
         logger.info(summary)
 
