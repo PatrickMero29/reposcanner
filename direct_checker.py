@@ -25,7 +25,7 @@ import os
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-CHECKPOINT_DIR = os.environ.get("LOCAL_MODEL_CHECKPOINT_DIR", "models/vuln-classifier-v8")
+CHECKPOINT_DIR = os.environ.get("LOCAL_MODEL_CHECKPOINT_DIR", "models/vuln-classifier-v10")
 
 VULNERABLE = '''import os
 def run(x):

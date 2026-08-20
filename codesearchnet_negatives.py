@@ -66,6 +66,55 @@ _TRIVIAL_SAFE_EXAMPLES = [
     "def is_valid_age(age):\n    return 0 <= age <= 150\n",
 ]
 
+# Hand-curated, unambiguously-SAFE examples that DO real I/O -- subprocess,
+# file paths, external API clients, HTTP, databases -- but do it safely
+# (list args, validated/joined paths, parameterized queries, no string-built
+# shell/SQL). Added after scanning a real repo (dspy-redteam) that flagged
+# 6/9 functions, none of which were actually dangerous -- they were LLM-API
+# wrapper functions (client.chat.completions.create(...), judge.run(...)),
+# textbook-safe subprocess.run(["ls", path]), and os.path.join-based file
+# reads. That pattern -- flagging code for merely TOUCHING something
+# external, rather than judging whether it does so safely -- suggests the
+# model may have been keying on a shallow "this code does I/O" correlation.
+# _TRIVIAL_SAFE_EXAMPLES fixed "short code" being wrongly flagged; this list
+# targets "safe I/O code" being wrongly flagged, the same way: guaranteed
+# explicit coverage rather than hoping enough examples survive random
+# sampling from CodeSearchNet.
+_SAFE_IO_EXAMPLES = [
+    # subprocess: list args, several call variants
+    "import subprocess\ndef list_dir(path):\n    result = subprocess.run([\"ls\", path], capture_output=True, text=True, check=True)\n    return result.stdout\n",
+    "import subprocess\ndef get_git_commit_hash(repo_dir):\n    output = subprocess.check_output([\"git\", \"rev-parse\", \"HEAD\"], cwd=repo_dir)\n    return output.decode().strip()\n",
+    "import subprocess\ndef run_tests(test_dir):\n    subprocess.check_call([\"pytest\", test_dir, \"-v\"])\n",
+    "import subprocess\ndef start_server(port):\n    return subprocess.Popen([\"python\", \"-m\", \"http.server\", str(port)])\n",
+    "import subprocess\ndef format_file(path):\n    subprocess.run([\"black\", path], check=True)\n",
+
+    # file paths: joined/validated, not concatenated from raw input
+    "import os\ndef read_user_file(base_dir, filename):\n    safe_name = os.path.basename(filename)\n    path = os.path.join(base_dir, safe_name)\n    with open(path) as f:\n        return f.read()\n",
+    "from pathlib import Path\ndef load_config(config_dir, name):\n    config_path = Path(config_dir) / f'{name}.json'\n    return config_path.read_text()\n",
+    "import os\ndef save_report(output_dir, report_id, content):\n    filename = os.path.basename(f'report_{report_id}.txt')\n    path = os.path.join(output_dir, filename)\n    with open(path, 'w') as f:\n        f.write(content)\n",
+    "import tempfile\ndef write_temp_file(content):\n    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:\n        f.write(content)\n        return f.name\n",
+
+    # external API clients: chat/completion/judge-style wrappers (matches
+    # the real false positives directly)
+    "def get_completion(client, model_name, prompt):\n    response = client.chat.completions.create(\n        model=model_name,\n        messages=[{'role': 'user', 'content': prompt}],\n    )\n    return response.choices[0].message.content.strip()\n",
+    "def score_response(judge_client, question, answer):\n    result = judge_client.run([{'question': question, 'answer': answer}])[0]\n    return round(result, 2)\n",
+    "def embed_text(client, text):\n    response = client.embeddings.create(model='text-embedding-3-small', input=text)\n    return response.data[0].embedding\n",
+    "def classify_sentiment(client, text):\n    resp = client.chat.completions.create(\n        model='gpt-4',\n        messages=[{'role': 'system', 'content': 'Classify sentiment.'}, {'role': 'user', 'content': text}],\n    )\n    return resp.choices[0].message.content\n",
+    "def evaluate_batch(model, eval_set, metric_fn):\n    scores = [metric_fn(x, y) for x, y in eval_set]\n    return sum(scores) / len(scores)\n",
+    "def run_pipeline(pipeline, input_data):\n    result = pipeline.run(input_data)\n    return result.output\n",
+
+    # HTTP: params/json kwargs, not string-built URLs
+    "import requests\ndef fetch_weather(city):\n    response = requests.get('https://api.example.com/weather', params={'city': city}, timeout=10)\n    response.raise_for_status()\n    return response.json()\n",
+    "import requests\ndef submit_feedback(api_url, feedback):\n    response = requests.post(api_url, json={'feedback': feedback}, timeout=10)\n    return response.status_code == 200\n",
+
+    # databases: parameterized, several variants
+    "def get_user(conn, username):\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM users WHERE username = %s', (username,))\n    return cursor.fetchone()\n",
+    "def insert_order(conn, customer_id, amount):\n    cursor = conn.cursor()\n    cursor.execute('INSERT INTO orders (customer_id, amount) VALUES (?, ?)', (customer_id, amount))\n    conn.commit()\n",
+    "def find_by_email(session, email):\n    return session.query(User).filter(User.email == email).first()\n",
+]
+
+_HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES
+
 # Try known-good mirrors in order. CodeSearchNet's own HF loading script is
 # a legacy script-based dataset and can be flaky/blocked on recent `datasets`
 # versions (trust_remote_code requirements, etc.) -- prefer plain parquet
@@ -117,9 +166,11 @@ def main() -> None:
             break
 
     print(f"Kept {len(kept)} functions from CodeSearchNet (target {TARGET_COUNT})")
-    kept.extend(_TRIVIAL_SAFE_EXAMPLES)
-    print(f"Added {len(_TRIVIAL_SAFE_EXAMPLES)} hand-curated trivial-safe examples "
-          f"({len(kept)} total)")
+    kept.extend(_HAND_CURATED_EXAMPLES)
+    print(
+        f"Added {len(_TRIVIAL_SAFE_EXAMPLES)} hand-curated trivial-safe examples + "
+        f"{len(_SAFE_IO_EXAMPLES)} hand-curated safe-I/O examples ({len(kept)} total)"
+    )
 
     os.makedirs("data", exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
