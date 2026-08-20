@@ -4998,3 +4998,23 @@
 {"code": "def create_organization(self, auth, owner_name, org_name, full_name=None, description=None,\n                            website=None, location=None):\n        \"\"\"\n        Creates a new organization, and returns the created organization.\n\n        :param auth.Authentication auth: authentication object, must be admin-level\n        :param str owner_name: Username of organization owner\n        :param str org_name: Organization name\n        :param str full_name: Full name of organization \n        :param str description: Description of the organization\n        :param str website: Official website\n        :param str location: Organization location\n        :return: a representation of the created organization\n        :rtype: GogsOrg\n        :raises NetworkFailure: if there is an error communicating with the server\n        :raises ApiFailure: if the request cannot be serviced\n        \"\"\"\n        data = {\n            \"username\": org_name,\n            \"full_name\": full_name,\n            \"description\": description,\n            \"website\": website,\n            \"location\": location\n        }\n\n        url = \"/admin/users/{u}/orgs\".format(u=owner_name)\n        response = self.post(url, auth=auth, data=data)\n        return GogsOrg.from_json(response.json())"}
 {"code": "def get_stp_brief_info_output_spanning_tree_info_spanning_tree_mode_rstp_rstp_migrate_time(self, **kwargs):\n        \"\"\"Auto Generated Code\n        \"\"\"\n        config = ET.Element(\"config\")\n        get_stp_brief_info = ET.Element(\"get_stp_brief_info\")\n        config = get_stp_brief_info\n        output = ET.SubElement(get_stp_brief_info, \"output\")\n        spanning_tree_info = ET.SubElement(output, \"spanning-tree-info\")\n        spanning_tree_mode = ET.SubElement(spanning_tree_info, \"spanning-tree-mode\")\n        rstp = ET.SubElement(spanning_tree_mode, \"rstp\")\n        rstp = ET.SubElement(rstp, \"rstp\")\n        migrate_time = ET.SubElement(rstp, \"migrate-time\")\n        migrate_time.text = kwargs.pop('migrate_time')\n\n        callback = kwargs.pop('callback', self._callback)\n        return callback(config)"}
 {"code": "def webify_file(srcfilename: str, destfilename: str) -> None:\n    \"\"\"\n    Rewrites a file from ``srcfilename`` to ``destfilename``, HTML-escaping it\n    in the process.\n    \"\"\"\n    with open(srcfilename) as infile, open(destfilename, 'w') as ofile:\n        for line_ in infile:\n            ofile.write(escape(line_))"}
+{"code": "def add(a, b):\n    return a + b\n"}
+{"code": "def subtract(a, b):\n    return a - b\n"}
+{"code": "def multiply(a, b):\n    return a * b\n"}
+{"code": "def is_even(n):\n    return n % 2 == 0\n"}
+{"code": "def square(x):\n    return x * x\n"}
+{"code": "def max_of_two(a, b):\n    return a if a > b else b\n"}
+{"code": "def get_name(self):\n    return self.name\n"}
+{"code": "def set_value(self, value):\n    self.value = value\n"}
+{"code": "def is_empty(items):\n    return len(items) == 0\n"}
+{"code": "def first(items):\n    return items[0] if items else None\n"}
+{"code": "def clamp(value, low, high):\n    return max(low, min(value, high))\n"}
+{"code": "def to_upper(s):\n    return s.upper()\n"}
+{"code": "def reverse_list(items):\n    return items[::-1]\n"}
+{"code": "def average(numbers):\n    return sum(numbers) / len(numbers)\n"}
+{"code": "def is_positive(n):\n    return n > 0\n"}
+{"code": "class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n"}
+{"code": "def greet(name):\n    return f'Hello, {name}!'\n"}
+{"code": "def count_items(items):\n    return len(items)\n"}
+{"code": "def flatten_pair(pair):\n    return list(pair)\n"}
+{"code": "def is_valid_age(age):\n    return 0 <= age <= 150\n"}
