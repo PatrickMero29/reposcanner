@@ -17,8 +17,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import random
+from pathlib import Path
 
 from .dataset import Example, PairExample, build_examples, train_val_split
 
@@ -244,6 +246,27 @@ def train_model_pairwise(
     # handles the numerical stability. Auto-disabled on CPU regardless of
     # this flag. None = auto (on for CUDA, off for CPU).
     use_amp: bool | None = None,
+    # Which epoch's checkpoint ends up saved at out_dir. Every past run just
+    # kept whichever epoch happened to run last -- v10's held-out metrics
+    # weren't even monotonically improving epoch-to-epoch, so "last" and
+    # "best" aren't the same thing. Doesn't cost extra disk: only ever one
+    # checkpoint is written to out_dir, overwritten in place whenever a
+    # later epoch's score beats the best-so-far -- not one dir per epoch.
+    # "composite" = average of val_ranking_accuracy (fine-grained CVE-pair
+    # discrimination) and held-out generic ranking_accuracy (does this
+    # generalize to arbitrary code) -- the two things that matter and can
+    # trade off against each other, per the v9/v10 regression discussion.
+    best_epoch_metric: str = "composite",
+    # v11 picked epoch 2 (composite=0.8569) over epoch 5 (composite=0.8550)
+    # -- a 0.0019 difference on a 756-example held-out set, i.e. ~3 examples
+    # flipping either way. That's noise, not signal, and epoch 2 was
+    # meaningfully less converged (train_loss 1.51 vs epoch 5's 0.87). A
+    # later epoch within `best_epoch_tolerance` of the current best score
+    # is now preferred over an earlier one, since more training exposure is
+    # independent evidence it's more converged even when these two coarse
+    # held-out metrics can't tell them apart. Only a genuinely larger score
+    # improvement moves the "best" epoch backward in time.
+    best_epoch_tolerance: float = 0.01,
 ) -> str:
     """Trains the classifier with a pairwise margin-ranking objective PLUS an
     absolute cross-entropy anchor, instead of train_model()'s independent
@@ -295,6 +318,16 @@ def train_model_pairwise(
             "torch/transformers are not installed. Install them with "
             '`pip install -e ".[ml]"` to train a model.'
         ) from exc
+
+    # `seed` was already used for data shuffling (Python's random module) but
+    # never for torch -- meaning the classifier head's random initialization
+    # (and dropout) differed on every run regardless of this parameter.
+    # v9/v10/v11 were never a clean apples-to-apples comparison because of
+    # this; seeding here makes re-running with the same config actually
+    # reproducible.
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     from .dataset import build_pairs, load_generic_negatives, train_val_split_pairs
 
@@ -516,7 +549,25 @@ def train_model_pairwise(
             "avg_after_prob_vuln": sum(after_probs) / n_batches,
         }
 
+    def _composite_score(epoch_metrics: dict) -> float:
+        cve_acc = epoch_metrics.get("val_ranking_accuracy")
+        generic_acc = epoch_metrics.get("held_out_generic_ranking_accuracy")
+        if best_epoch_metric == "val_ranking_accuracy":
+            return cve_acc if cve_acc is not None else float("-inf")
+        if best_epoch_metric == "generic_ranking_accuracy":
+            return generic_acc if generic_acc is not None else float("-inf")
+        if best_epoch_metric == "composite":
+            vals = [v for v in (cve_acc, generic_acc) if v is not None]
+            return sum(vals) / len(vals) if vals else float("-inf")
+        raise ValueError(
+            f"Unknown best_epoch_metric={best_epoch_metric!r}, expected one of "
+            "'composite', 'val_ranking_accuracy', 'generic_ranking_accuracy'."
+        )
+
     step = 0
+    history: list[dict] = []
+    best_score = float("-inf")
+    best_epoch = None
     for epoch in range(epochs):
         model.train()
         epoch_losses = []
@@ -543,29 +594,77 @@ def train_model_pairwise(
                 )
 
         train_loss = sum(epoch_losses) / len(epoch_losses)
+        epoch_metrics: dict = {"epoch": epoch + 1, "train_loss": train_loss}
         summary = f"Epoch {epoch + 1}/{epochs}: train_loss={train_loss:.4f}"
         if val_loader:
             m = _run_eval(val_loader)
+            epoch_metrics.update({
+                "val_loss": m["loss"],
+                "val_ranking_accuracy": m["ranking_accuracy"],
+                "val_avg_before_prob_vuln": m["avg_before_prob_vuln"],
+                "val_avg_after_prob_vuln": m["avg_after_prob_vuln"],
+            })
             summary += (
                 f", val_loss={m['loss']:.4f}, val_ranking_accuracy={m['ranking_accuracy']:.4f}, "
                 f"val_avg_prob_vuln(before/after)={m['avg_before_prob_vuln']:.3f}/{m['avg_after_prob_vuln']:.3f}"
             )
         if val_generic_loader:
             g = _run_eval(val_generic_loader)
+            epoch_metrics.update({
+                "held_out_generic_ranking_accuracy": g["ranking_accuracy"],
+                "held_out_generic_avg_before_prob_vuln": g["avg_before_prob_vuln"],
+                "held_out_generic_avg_after_prob_vuln": g["avg_after_prob_vuln"],
+            })
             # This is the number that answers "does this generalize to
             # arbitrary unrelated code" -- neither before/after here has ever
             # been seen in training. before = held-out real vulnerable code,
             # after = held-out generic negative (never-trained-on
             # CodeSearchNet function). Want after_prob_vuln low and
-            # ranking_accuracy high; sanity_check.py's 2-example anecdote is
-            # a spot check on this, not a substitute for it.
+            # ranking_accuracy high; sanity_check.py's cases are a spot check
+            # on this, not a substitute for it.
             summary += (
                 f" | held-out generic: ranking_accuracy={g['ranking_accuracy']:.4f}, "
                 f"avg_prob_vuln(vuln/generic_negative)={g['avg_before_prob_vuln']:.3f}/{g['avg_after_prob_vuln']:.3f}"
             )
+
+        score = _composite_score(epoch_metrics)
+        epoch_metrics["selection_score"] = score
+        # A later epoch wins if it's strictly better, OR if it's within
+        # tolerance of the best-so-far -- since it's later, it's had strictly
+        # more training and that's independent evidence of being at least as
+        # converged, even when these two coarse held-out numbers can't
+        # distinguish them. Only a real (>tolerance) drop keeps the earlier
+        # epoch's checkpoint in place.
+        is_best = score > best_score - best_epoch_tolerance
+        if is_best:
+            improved = score > best_score
+            best_score = max(score, best_score)
+            best_epoch = epoch + 1
+            model.save_pretrained(out_dir)
+            tokenizer.save_pretrained(out_dir)
+            tag = "NEW BEST" if improved else "KEPT (within tolerance of best, later epoch preferred)"
+            summary += f" -> {tag} (score={score:.4f}, best={best_score:.4f}), saved to {out_dir}"
+        history.append(epoch_metrics)
         logger.info(summary)
 
-    model.save_pretrained(out_dir)
-    tokenizer.save_pretrained(out_dir)
-    logger.info("Model + tokenizer saved to %s", out_dir)
+    if best_epoch is None:
+        # No val data to score against (val_loader/val_generic_loader both
+        # empty) -- fall back to saving whatever the last epoch produced,
+        # same behavior as before this change.
+        model.save_pretrained(out_dir)
+        tokenizer.save_pretrained(out_dir)
+        best_epoch = epochs
+        logger.info("No validation data available to pick a best epoch -- saved final epoch instead.")
+
+    history_path = Path(out_dir) / "training_history.json"
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"best_epoch": best_epoch, "best_epoch_metric": best_epoch_metric, "epochs": history},
+            f, indent=2,
+        )
+    logger.info(
+        "Training complete. Best epoch: %d/%d (by %s, score=%.4f). "
+        "Full per-epoch history: %s",
+        best_epoch, epochs, best_epoch_metric, best_score, history_path,
+    )
     return out_dir
