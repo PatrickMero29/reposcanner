@@ -231,6 +231,24 @@ def train_model_pairwise(
     seed: int = 42,
     generic_negatives_path: str | None = None,
     generic_negative_ratio: float = 1.0,
+    # Hand-curated negatives (see fetch_codesearchnet_negatives.py's
+    # _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES). Unlike generic_negatives_path,
+    # these are ALWAYS added to training and NEVER held out. Merging them into
+    # the same shuffled pool as the CodeSearchNet samples was a real bug:
+    # path_join_safe had a ~15% chance each run of landing in the held-out
+    # validation slice instead of training, by construction -- confirmed as
+    # the root cause of its 5-consecutive-run sanity_check.py failure via
+    # sanity_check_history.jsonl. These exist specifically to teach the model
+    # particular known-hard cases; holding one out at random defeats the point.
+    curated_negatives_path: str | None = None,
+    # Explicit (vulnerable, safe) contrastive pairs on the same pattern (see
+    # fetch_codesearchnet_negatives.py's _CURATED_VULNERABLE_SAFE_PAIRS).
+    # Added after sql_injection failed 5 consecutive runs while
+    # sql_parameterized (the safe counterpart) passed every time -- the model
+    # had learned "DB cursor code = safe" too broadly and needed the direct
+    # vulnerable/safe contrast on that exact pattern, not more of the safe
+    # side alone. Always trained on, never held out, same reasoning as above.
+    curated_pairs_path: str | None = None,
     # Weight on the absolute cross-entropy anchor term (see docstring below).
     # 0.0 reproduces the pure-ranking v5/v6 behavior; don't set it to 0 unless
     # you specifically want to reproduce that calibration-drift failure mode.
@@ -414,6 +432,38 @@ def train_model_pairwise(
                 )
                 for i, neg in enumerate(val_negatives)
             ]
+
+    if curated_negatives_path:
+        from .dataset import load_generic_negatives as _load_curated  # same jsonl shape
+        curated_negatives = _load_curated(curated_negatives_path)
+        if not curated_negatives:
+            raise ValueError(f"No curated negatives loaded from {curated_negatives_path!r}.")
+        rng2 = random.Random(seed)
+        vulnerable_pool_for_curated = [p.before_code for p in train_pairs]
+        curated_synthetic = [
+            PairExample(
+                pair_id=f"curated_negative:{i}",
+                before_code=rng2.choice(vulnerable_pool_for_curated),
+                after_code=neg,
+            )
+            for i, neg in enumerate(curated_negatives)
+        ]
+        logger.info(
+            "Adding all %d curated negatives from %s to training (never held out).",
+            len(curated_negatives), curated_negatives_path,
+        )
+        train_pairs = train_pairs + curated_synthetic
+
+    if curated_pairs_path:
+        from .dataset import load_curated_pairs
+        curated_pairs = load_curated_pairs(curated_pairs_path)
+        if not curated_pairs:
+            raise ValueError(f"No curated pairs loaded from {curated_pairs_path!r}.")
+        logger.info(
+            "Adding all %d curated vulnerable/safe contrastive pairs from %s to "
+            "training (never held out).", len(curated_pairs), curated_pairs_path,
+        )
+        train_pairs = train_pairs + curated_pairs
 
     logger.info(
         "Training on %d pairs, validating on %d CVE pairs + %d generic-negative pairs.",

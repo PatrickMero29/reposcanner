@@ -115,3 +115,27 @@ def load_generic_negatives(path: str) -> list[str]:
             if code:
                 negatives.append(code)
     return negatives
+
+
+def load_curated_pairs(path: str) -> list[PairExample]:
+    """Loads a jsonl file of {"vulnerable": ..., "safe": ...} objects (see
+    fetch_codesearchnet_negatives.py's _CURATED_VULNERABLE_SAFE_PAIRS) --
+    explicit hand-written vulnerable/safe contrasts on the SAME pattern
+    (e.g. string-concatenated vs parameterized SQL), for cases where the
+    model has learned the safe side of a pattern but not the vulnerable
+    side (or vice versa) and needs the direct contrast rather than more
+    standalone examples of whichever side it already has right.
+    """
+    pairs: list[PairExample] = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            pairs.append(PairExample(
+                pair_id=f"curated:{i}",
+                before_code=obj["vulnerable"],
+                after_code=obj["safe"],
+            ))
+    return pairs

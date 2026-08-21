@@ -13,7 +13,12 @@ a broadly diverse population of code that was never near a CVE.
 Run once from C:\\reposcanner with the venv active:
     python fetch_codesearchnet_negatives.py
 
-Writes data/codesearchnet_negatives.jsonl (one {"code": ...} object per line).
+Writes:
+  data/codesearchnet_negatives.jsonl  -- CodeSearchNet samples, subject to
+                                          train/val split in train.py
+  data/curated_negatives.jsonl        -- hand-curated examples, ALWAYS
+                                          trained on, never held out (see
+                                          note below on why this is separate)
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import random
 from datasets import load_dataset
 
 OUT_PATH = "data/codesearchnet_negatives.jsonl"
+CURATED_OUT_PATH = "data/curated_negatives.jsonl"
 TARGET_COUNT = 5000
 # Lowered from 40 -- the original MIN_CHARS=40 systematically excluded short
 # functions (getters, one-line arithmetic, tiny helpers) from BOTH the
@@ -80,6 +86,15 @@ _TRIVIAL_SAFE_EXAMPLES = [
 # targets "safe I/O code" being wrongly flagged, the same way: guaranteed
 # explicit coverage rather than hoping enough examples survive random
 # sampling from CodeSearchNet.
+#
+# IMPORTANT: these (and _TRIVIAL_SAFE_EXAMPLES) are written to a SEPARATE
+# file from the CodeSearchNet samples (see CURATED_OUT_PATH below), and
+# train.py loads that file as always-trained-on, never held out. Writing
+# them into the same shuffled/split pool as the CodeSearchNet samples was
+# a real bug: path_join_safe (below) has a ~15% chance each run of landing
+# in the held-out validation slice instead of training, by construction --
+# confirmed as the root cause of path_join_safe's persistent sanity_check.py
+# failure (5 consecutive tracked runs) via sanity_check_history.jsonl.
 _SAFE_IO_EXAMPLES = [
     # subprocess: list args, several call variants
     "import subprocess\ndef list_dir(path):\n    result = subprocess.run([\"ls\", path], capture_output=True, text=True, check=True)\n    return result.stdout\n",
@@ -114,6 +129,59 @@ _SAFE_IO_EXAMPLES = [
 ]
 
 _HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES
+
+# Explicit (vulnerable, safe) CONTRASTIVE PAIRS for patterns where the model
+# has persistently gotten the vulnerable side wrong (sql_injection: 5
+# consecutive failing runs; eval_untrusted/exec_untrusted_longer: same) even
+# though the safe counterpart is handled correctly. That asymmetry is the
+# tell: this isn't "needs more safe examples" (that's what _SAFE_IO_EXAMPLES
+# was for, and it already includes 3 safe-DB examples) -- it's "the model
+# learned cursor.execute()-with-a-DB-object reads as safe in general, and
+# needs the explicit contrast of the SAME pattern done unsafely to learn
+# the actual distinguishing feature (string-built query vs parameterized),
+# not just another instance of the safe side reinforcing that association
+# further." Written to CURATED_PAIRS_OUT_PATH, loaded as real training
+# pairs by train.py (not run through the generic-negative machinery).
+CURATED_PAIRS_OUT_PATH = "data/curated_vulnerable_pairs.jsonl"
+
+_CURATED_VULNERABLE_SAFE_PAIRS: list[tuple[str, str]] = [
+    (
+        # vulnerable: string-concatenated query
+        "def get_user(conn, username):\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE username = '\" + username + \"'\"\n    cursor.execute(query)\n    return cursor.fetchone()\n",
+        # safe: parameterized, otherwise identical
+        "def get_user(conn, username):\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM users WHERE username = %s', (username,))\n    return cursor.fetchone()\n",
+    ),
+    (
+        "def find_order(conn, order_id):\n    cursor = conn.cursor()\n    cursor.execute(\"SELECT * FROM orders WHERE id = \" + str(order_id))\n    return cursor.fetchone()\n",
+        "def find_order(conn, order_id):\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM orders WHERE id = ?', (order_id,))\n    return cursor.fetchone()\n",
+    ),
+    (
+        "def delete_user(conn, username):\n    cursor = conn.cursor()\n    cursor.execute(f\"DELETE FROM users WHERE username = '{username}'\")\n    conn.commit()\n",
+        "def delete_user(conn, username):\n    cursor = conn.cursor()\n    cursor.execute('DELETE FROM users WHERE username = ?', (username,))\n    conn.commit()\n",
+    ),
+    (
+        "def search_products(conn, term):\n    cursor = conn.cursor()\n    cursor.execute(\"SELECT * FROM products WHERE name LIKE '%\" + term + \"%'\")\n    return cursor.fetchall()\n",
+        "def search_products(conn, term):\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM products WHERE name LIKE %s', (f'%{term}%',))\n    return cursor.fetchall()\n",
+    ),
+    # eval/exec: more length/framing diversity on the VULNERABLE side,
+    # mirroring what _SAFE_IO_EXAMPLES did for the safe side of I/O patterns
+    (
+        "def compute(expr):\n    return eval(expr)\n",
+        "def compute(expr):\n    import ast\n    return ast.literal_eval(expr)\n",
+    ),
+    (
+        "def run_plugin_code(plugin_name, plugin_source, context):\n    \"\"\"Load and execute a user-submitted plugin against the given context.\"\"\"\n    namespace = {'context': context}\n    logger.info('Loading plugin: %s', plugin_name)\n    exec(plugin_source, namespace)\n    return namespace.get('result')\n",
+        "def run_plugin_code(plugin_name, plugin_func, context):\n    \"\"\"Call a pre-registered plugin function against the given context.\"\"\"\n    logger.info('Loading plugin: %s', plugin_name)\n    return plugin_func(context)\n",
+    ),
+    (
+        "def calculate_discount(formula, price):\n    return eval(formula.replace('price', str(price)))\n",
+        "def calculate_discount(discount_percent, price):\n    return price * (1 - discount_percent / 100)\n",
+    ),
+    (
+        "def apply_user_script(script_text, data):\n    local_vars = {'data': data}\n    exec(script_text, {}, local_vars)\n    return local_vars.get('output')\n",
+        "def apply_user_script(transform_name, data):\n    transform = REGISTERED_TRANSFORMS[transform_name]\n    return transform(data)\n",
+    ),
+]
 
 # Try known-good mirrors in order. CodeSearchNet's own HF loading script is
 # a legacy script-based dataset and can be flaky/blocked on recent `datasets`
@@ -166,18 +234,30 @@ def main() -> None:
             break
 
     print(f"Kept {len(kept)} functions from CodeSearchNet (target {TARGET_COUNT})")
-    kept.extend(_HAND_CURATED_EXAMPLES)
-    print(
-        f"Added {len(_TRIVIAL_SAFE_EXAMPLES)} hand-curated trivial-safe examples + "
-        f"{len(_SAFE_IO_EXAMPLES)} hand-curated safe-I/O examples ({len(kept)} total)"
-    )
 
     os.makedirs("data", exist_ok=True)
+
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         for code in kept:
             f.write(json.dumps({"code": code}) + "\n")
+    print(f"Wrote {OUT_PATH} ({len(kept)} CodeSearchNet samples, subject to train/val split)")
 
-    print(f"Wrote {OUT_PATH}")
+    with open(CURATED_OUT_PATH, "w", encoding="utf-8") as f:
+        for code in _HAND_CURATED_EXAMPLES:
+            f.write(json.dumps({"code": code}) + "\n")
+    print(
+        f"Wrote {CURATED_OUT_PATH} ({len(_TRIVIAL_SAFE_EXAMPLES)} trivial-safe + "
+        f"{len(_SAFE_IO_EXAMPLES)} safe-I/O = {len(_HAND_CURATED_EXAMPLES)} total, "
+        "ALWAYS trained on, never held out)"
+    )
+
+    with open(CURATED_PAIRS_OUT_PATH, "w", encoding="utf-8") as f:
+        for vulnerable, safe in _CURATED_VULNERABLE_SAFE_PAIRS:
+            f.write(json.dumps({"vulnerable": vulnerable, "safe": safe}) + "\n")
+    print(
+        f"Wrote {CURATED_PAIRS_OUT_PATH} ({len(_CURATED_VULNERABLE_SAFE_PAIRS)} "
+        "vulnerable/safe contrastive pairs, ALWAYS trained on)"
+    )
 
 
 if __name__ == "__main__":
