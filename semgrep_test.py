@@ -64,7 +64,7 @@ def main() -> None:
         print("Downloading/running p/security-audit against test snippets...\n")
         result = subprocess.run(
             ["semgrep", "scan", "--config", "p/security-audit", "--json", str(tmp_path)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode not in (0, 1):
             print("Semgrep failed to run:")

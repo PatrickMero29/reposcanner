@@ -1,0 +1,84 @@
+rules:
+  - id: os-system-call
+    patterns:
+      - pattern-either:
+          - pattern: os.system(...)
+          - pattern: os.popen(...)
+    message: >-
+      os.system/os.popen call. Flagged unconditionally (not taint-traced) --
+      if the argument is built from any external input (concatenation,
+      f-string, .format(), user/request data), this is command injection.
+      Safe if the command string is fully hardcoded with no dynamic parts.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+
+  - id: open-dynamic-path
+    patterns:
+      - pattern-either:
+          - pattern: open($X + $Y, ...)
+          - pattern: open(f"...{$VAR}...", ...)
+          - pattern: |
+              $PATH = $X + $Y
+              ...
+              open($PATH, ...)
+          - pattern: |
+              $PATH = f"...{$VAR}..."
+              ...
+              open($PATH, ...)
+          - pattern: |
+              $PATH = $X + $Y
+              ...
+              with open($PATH, ...) as $F:
+                  ...
+          - pattern: |
+              $PATH = f"...{$VAR}..."
+              ...
+              with open($PATH, ...) as $F:
+                  ...
+      - metavariable-pattern:
+          metavariable: $X
+          patterns:
+            - pattern-not: '"..."'
+    message: >-
+      File path built via string concatenation or f-string, then passed to
+      open(). Flagged unconditionally -- if any part comes from external
+      input, this is path traversal (e.g. "../../etc/passwd"). Prefer
+      os.path.join with os.path.basename() applied to the untrusted
+      component, or an explicit allowlist check.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-22: Path Traversal"
+
+  - id: sql-query-string-building
+    patterns:
+      - pattern-either:
+          - pattern: $CURSOR.execute("..." + $VAR, ...)
+          - pattern: $CURSOR.execute($VAR + "...", ...)
+          - pattern: $CURSOR.execute(f"...{$VAR}...", ...)
+          - pattern: $CURSOR.execute("..." % $VAR, ...)
+          - pattern: $CURSOR.execute("...".format(...), ...)
+          - pattern: |
+              $QUERY = "..." + $VAR
+              ...
+              $CURSOR.execute($QUERY, ...)
+          - pattern: |
+              $QUERY = $VAR + "..."
+              ...
+              $CURSOR.execute($QUERY, ...)
+          - pattern: |
+              $QUERY = f"...{$VAR}..."
+              ...
+              $CURSOR.execute($QUERY, ...)
+    message: >-
+      SQL query string built via concatenation, f-string, %, or .format()
+      rather than passed as separate parameters. Flagged unconditionally --
+      this is SQL injection if any part is externally influenced. Use
+      parameterized queries: cursor.execute("... WHERE x = %s", (value,))
+      instead of building the query string yourself.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89: SQL Injection"
