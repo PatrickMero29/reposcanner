@@ -128,7 +128,114 @@ _SAFE_IO_EXAMPLES = [
     "def find_by_email(session, email):\n    return session.query(User).filter(User.email == email).first()\n",
 ]
 
-_HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES
+# Targets the one false-positive class that hasn't budged across every
+# training round so far: 6 functions in a real repo (dspy-redteam) --
+# metric, eval_program, main, judge_prompt, verdict_judge, get_response --
+# have stayed flagged (in some subset) through v9-v13 regardless of what
+# else changed. Two things distinguish them from every other fix in this
+# file:
+#
+# 1. NESTED CALL CHAINS: metric() calls get_response(), verdict_judge(), and
+#    judge_prompt() -- none of which do anything unsafe individually, but if
+#    the model treats "calls a function that itself looks suspicious" as
+#    evidence, that suspicion could cascade upward through a call chain even
+#    when nothing at any level is actually dangerous. Every other curated
+#    fix in this file has been single-function; these are deliberately
+#    multi-function chains of the same shape (wrapper calling wrapper).
+#
+# 2. SECURITY-ADJACENT VOCABULARY: the real functions are full of terms like
+#    "harmful_intent", "attack_prompt", "redteaming assistant" -- plausible
+#    lexical overlap with real CVE fix commit messages/docstrings, which
+#    could teach "this text is ABOUT security topics" rather than "this code
+#    DOES something dangerous" -- two different things a surface-pattern
+#    model could conflate. These examples deliberately reuse that vocabulary
+#    in functionally inert contexts (logging, comparison, simple existence
+#    checks) to break that association if it exists.
+_LLM_ORCHESTRATION_SAFE_EXAMPLES = [
+    # nested LLM-API wrapper chains (mirrors metric -> get_response /
+    # verdict_judge / judge_prompt exactly, generic client/method names so
+    # this doesn't just memorize the one real repo)
+    (
+        "def get_completion(client, model_name, prompt, inference_params=None):\n"
+        "    inference_params = inference_params or {}\n"
+        "    response = client.chat.completions.create(\n"
+        "        model=model_name,\n"
+        "        messages=[{'role': 'system', 'content': 'You are a helpful assistant.'},\n"
+        "                  {'role': 'user', 'content': prompt}],\n"
+        "        **inference_params,\n"
+        "    )\n"
+        "    return response.choices[0].message.content.strip()\n"
+    ),
+    (
+        "def score_with_rubric(client, question, answer) -> float:\n"
+        "    resp = client.chat.completions.create(\n"
+        "        model='gpt-4',\n"
+        "        response_model=RubricScore,\n"
+        "        messages=[\n"
+        "            {'role': 'system', 'content': 'You are a grading assistant.'},\n"
+        "            {'role': 'user', 'content': f'Question: {question}\\nAnswer: {answer}\\nScore 0 to 1.'},\n"
+        "        ],\n"
+        "    )\n"
+        "    return resp.score\n"
+    ),
+    (
+        "def run_judge(judge_model, sample):\n"
+        "    result = judge_model.run([Schema.of(input=sample.input, output=sample.output)])[0]\n"
+        "    return result, None\n"
+    ),
+    (
+        "def combined_metric(sample, prediction, use_rubric=True, round_result=True):\n"
+        "    response = get_completion(target_client, target_model, prediction.text)\n"
+        "    if use_rubric:\n"
+        "        score = run_judge(judge_model, sample)[0] / 5\n"
+        "    else:\n"
+        "        score = score_with_rubric(instructor_client, sample.question, response)\n"
+        "    if round_result:\n"
+        "        score = round(score)\n"
+        "    return score\n"
+    ),
+    (
+        "def evaluate_program(program, eval_set):\n"
+        "    evaluator = Evaluate(\n"
+        "        devset=eval_set,\n"
+        "        metric=lambda x, y: combined_metric(x, y),\n"
+        "        num_threads=4,\n"
+        "        display_progress=True,\n"
+        "    )\n"
+        "    evaluator(program)\n"
+    ),
+
+    # security-adjacent vocabulary in functionally inert code (logging,
+    # comparison, list/dict operations -- no actual sink, no actual risk)
+    (
+        "def log_attack_attempt(attack_prompt, target_name):\n"
+        "    \"\"\"Record a red-team test case for later review.\"\"\"\n"
+        "    logger.info('Recorded attack attempt against %s: %s', target_name, attack_prompt[:50])\n"
+        "    return {'target': target_name, 'prompt': attack_prompt}\n"
+    ),
+    (
+        "def is_harmful_intent_flagged(harmful_intent, flagged_intents):\n"
+        "    \"\"\"Check whether a harmful-intent string is already in the known set.\"\"\"\n"
+        "    return harmful_intent.strip().lower() in flagged_intents\n"
+    ),
+    (
+        "def summarize_redteam_results(results):\n"
+        "    \"\"\"Aggregate red-team evaluation scores by category.\"\"\"\n"
+        "    totals = {}\n"
+        "    for r in results:\n"
+        "        category = r.get('category', 'uncategorized')\n"
+        "        totals[category] = totals.get(category, 0) + r.get('score', 0)\n"
+        "    return totals\n"
+    ),
+    (
+        "def build_vulnerability_report(findings):\n"
+        "    \"\"\"Turn a list of finding dicts into a simple text summary.\"\"\"\n"
+        "    lines = [f\"{f['severity']}: {f['title']}\" for f in findings]\n"
+        "    return '\\n'.join(lines)\n"
+    ),
+]
+
+_HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES + _LLM_ORCHESTRATION_SAFE_EXAMPLES
 
 # Explicit (vulnerable, safe) CONTRASTIVE PAIRS for patterns where the model
 # has persistently gotten the vulnerable side wrong (sql_injection: 5
@@ -247,8 +354,8 @@ def main() -> None:
             f.write(json.dumps({"code": code}) + "\n")
     print(
         f"Wrote {CURATED_OUT_PATH} ({len(_TRIVIAL_SAFE_EXAMPLES)} trivial-safe + "
-        f"{len(_SAFE_IO_EXAMPLES)} safe-I/O = {len(_HAND_CURATED_EXAMPLES)} total, "
-        "ALWAYS trained on, never held out)"
+        f"{len(_SAFE_IO_EXAMPLES)} safe-I/O + {len(_LLM_ORCHESTRATION_SAFE_EXAMPLES)} "
+        f"LLM-orchestration = {len(_HAND_CURATED_EXAMPLES)} total, ALWAYS trained on, never held out)"
     )
 
     with open(CURATED_PAIRS_OUT_PATH, "w", encoding="utf-8") as f:
