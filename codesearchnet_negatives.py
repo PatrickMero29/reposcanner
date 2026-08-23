@@ -235,7 +235,24 @@ _LLM_ORCHESTRATION_SAFE_EXAMPLES = [
     ),
 ]
 
-_HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES + _LLM_ORCHESTRATION_SAFE_EXAMPLES
+# Ablation switch: v14 added _LLM_ORCHESTRATION_SAFE_EXAMPLES on top of v13's
+# curated set and, on the tracked sanity_check.py suite, went 16/20 -> 14/20
+# -- specifically REVERSING two fixes from the previous round (sql_injection,
+# eval_untrusted both flipped back to failing) while the real-repo target
+# problem only partially improved (2 false positives cleared, 1 new one
+# appeared: AttackProgram.forward). That's a net regression, not progress,
+# and it's not yet clear whether these 9 examples specifically caused it or
+# it's unrelated noise. Set this to False, regenerate, and retrain to
+# produce the ablation run: same setup as v14 except these 9 examples are
+# excluded, which should closely reproduce v13's behavior if they're the
+# cause. If sql_injection/eval_untrusted come back as RECOVERED and
+# AttackProgram.forward-style new false positives don't reappear, that
+# confirms it. If the regressions persist anyway, something else is going on.
+INCLUDE_LLM_ORCHESTRATION_EXAMPLES = False #Changed for now to test
+
+_HAND_CURATED_EXAMPLES = _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES + (
+    _LLM_ORCHESTRATION_SAFE_EXAMPLES if INCLUDE_LLM_ORCHESTRATION_EXAMPLES else []
+)
 
 # Explicit (vulnerable, safe) CONTRASTIVE PAIRS for patterns where the model
 # has persistently gotten the vulnerable side wrong (sql_injection: 5
@@ -352,10 +369,12 @@ def main() -> None:
     with open(CURATED_OUT_PATH, "w", encoding="utf-8") as f:
         for code in _HAND_CURATED_EXAMPLES:
             f.write(json.dumps({"code": code}) + "\n")
+    llm_orch_count = len(_LLM_ORCHESTRATION_SAFE_EXAMPLES) if INCLUDE_LLM_ORCHESTRATION_EXAMPLES else 0
+    mode_note = "ABLATION MODE -- LLM-orchestration examples EXCLUDED" if not INCLUDE_LLM_ORCHESTRATION_EXAMPLES else "full set"
     print(
-        f"Wrote {CURATED_OUT_PATH} ({len(_TRIVIAL_SAFE_EXAMPLES)} trivial-safe + "
-        f"{len(_SAFE_IO_EXAMPLES)} safe-I/O + {len(_LLM_ORCHESTRATION_SAFE_EXAMPLES)} "
-        f"LLM-orchestration = {len(_HAND_CURATED_EXAMPLES)} total, ALWAYS trained on, never held out)"
+        f"Wrote {CURATED_OUT_PATH} [{mode_note}] ({len(_TRIVIAL_SAFE_EXAMPLES)} trivial-safe + "
+        f"{len(_SAFE_IO_EXAMPLES)} safe-I/O + {llm_orch_count} LLM-orchestration = "
+        f"{len(_HAND_CURATED_EXAMPLES)} total, ALWAYS trained on, never held out)"
     )
 
     with open(CURATED_PAIRS_OUT_PATH, "w", encoding="utf-8") as f:

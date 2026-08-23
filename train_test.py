@@ -4,7 +4,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 from vulnscan.training.train import train_model_pairwise
 train_model_pairwise(
     dataset_db_path='data/cvefixes_v2.duckdb',
-    out_dir='models/vuln-classifier-v14',
+    out_dir='models/vuln-classifier-v15',
     epochs=6,
     generic_negatives_path='data/codesearchnet_negatives.jsonl',
     curated_negatives_path='data/curated_negatives.jsonl',
