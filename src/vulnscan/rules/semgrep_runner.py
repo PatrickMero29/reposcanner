@@ -119,7 +119,10 @@ def run_semgrep(
         if "auto" not in configs:
             cmd.append("--metrics=off")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
+            )
         except subprocess.TimeoutExpired:
             logger.warning(
                 "semgrep timed out after %ss on %s — continuing without static pre-filter for this run.",
