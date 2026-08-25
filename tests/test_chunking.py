@@ -56,3 +56,27 @@ def test_chunk_source_file_dispatches_by_extension():
 def test_chunk_file_handles_syntax_errors_gracefully():
     chunks = chunk_file("broken.py", "def broken(:\n    pass")
     assert chunks == []
+
+
+NESTED_CLOSURE_SOURCE = '''
+import os
+
+def make_runner(base_cmd):
+    def run(user_input):
+        os.system(base_cmd + user_input)
+        return True
+    return run
+'''
+
+
+def test_chunk_file_does_not_double_chunk_nested_closures():
+    # Regression test for HANDOFF_2.md §8.1: a function containing a nested
+    # closure used to be chunked twice -- once whole, once again as an
+    # isolated, context-stripped fragment for the closure alone (which
+    # references outer-scope variables like `base_cmd` it can't see on its
+    # own). The closure should now only appear as part of its enclosing
+    # function's chunk.
+    chunks = chunk_file("sample.py", NESTED_CLOSURE_SOURCE)
+    names = [c.function_name for c in chunks]
+    assert names == ["make_runner"], "nested closure `run` should not be a separate chunk"
+    assert "def run(user_input):" in chunks[0].code, "closure should still be present in the parent's source"

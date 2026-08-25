@@ -82,23 +82,13 @@ def _cmd_bench_diff(args: argparse.Namespace) -> None:
 
 
 def _cmd_bench_judge(args: argparse.Namespace) -> None:
-    # NOTE: this phase requires src/vulnscan/pipeline/judge.py's
-    # `..anthropic_client` import, which does not currently exist anywhere in
-    # this repo (settings.verifier_model is also undefined in config.py). This
-    # is real, un-migrated leftover from before the project's "zero paid API"
-    # pivot (see HANDOFF.md §1: "Never suggest reintroducing an LLM API...
-    # that door is closed permanently"). Wiring the CLI subcommand through
-    # doesn't fix that -- it will raise ModuleNotFoundError the moment this
-    # command actually runs. Deciding how to replace the LLM judge (a local
-    # heuristic? a manual review step?) is a real design decision, not
-    # something to silently patch by re-adding an API client.
     from .pipeline.judge import run_judge
     out_path = args.out or str(Path(args.diff_json).parent / "judged.json")
-    out = asyncio.run(run_judge(
+    out = run_judge(
         diff_json_path=args.diff_json,
         dataset_db_path=args.dataset_db or settings.dataset_db_path,
         out_path=out_path, language=args.language,
-    ))
+    )
     print(f"Wrote judged findings to {out}")
 
 
@@ -177,9 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bench_judge = sub.add_parser(
         "bench-judge",
-        help="Benchmark phase 3: judge vuln_only findings against CVE ground truth. "
-             "NOT CURRENTLY RUNNABLE -- depends on a vulnscan.anthropic_client module "
-             "that doesn't exist in this repo; see the code comment in _cmd_bench_judge.",
+        help="Benchmark phase 3: judge vuln_only findings against CVE ground truth via a "
+             "local CWE-overlap/text-similarity heuristic -- no API call.",
     )
     p_bench_judge.add_argument("diff_json", help="Path to diff.json from bench-diff.")
     p_bench_judge.add_argument("--dataset-db", default=None)
