@@ -1,7 +1,12 @@
-"""Extracts individual top-level and nested function/method definitions from
-Python source using the standard library `ast` module, with enough
-surrounding context (decorators, containing class signature) to be analyzable
-in isolation.
+"""Extracts individual top-level, method, and class-level function
+definitions from Python source using the standard library `ast` module,
+with enough surrounding context (decorators, containing class signature) to
+be analyzable in isolation.
+
+Deliberately does NOT chunk closures (functions nested inside other
+functions) as separate fragments -- they're already included verbatim
+inside their enclosing function's chunk, and a closure analyzed on its own
+loses the outer-scope variables it references. See `_visit_function` below.
 """
 
 from __future__ import annotations
@@ -62,8 +67,14 @@ def chunk_file(file_path: str, source: str) -> list[CodeChunk]:
                     language=Language.PYTHON,
                     file_path=file_path,
                 ))
-            # Still descend, in case of nested functions/closures.
-            self.generic_visit(node)
+            # Deliberately do NOT descend into this function's body. A nested
+            # function/closure is already included verbatim in the chunk
+            # just appended above (_get_source_segment captures the full
+            # text, nested defs included) -- recursing here used to chunk it
+            # a second time as an isolated fragment that references
+            # outer-scope variables it can no longer see, wasting analysis
+            # and producing confusing findings on a fragment that isn't
+            # valid code on its own. See HANDOFF_2.md §8.1.
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             self._visit_function(node)

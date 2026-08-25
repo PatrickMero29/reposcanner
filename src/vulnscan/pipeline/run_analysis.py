@@ -1,13 +1,16 @@
 """Phase 1 of the benchmark: run the analyzer over every function in the
 dataset, both the vulnerable ("before") and fixed ("after") versions of each
-pair, at a given justification level. Mirrors the original repo's
-`analyze.py`, generalized across languages via `schemas.Language`.
+pair. Mirrors the original repo's `analyze.py`, generalized across languages
+via `schemas.Language`.
 
 Output: one JSON file per run under
-    data/experiments/<level>/runs/<run_number>/analysis.json
+    data/experiments/<run_number>/analysis.json
 containing a flat list of {pair_id, variant: "before"|"after", findings: [...]}.
 
-Replace with logic for own model soon
+NOTE: this benchmarks the local classifier's own precision in isolation —
+static_findings is left at its default (None) since there's no natural
+per-pair Semgrep context in this benchmark setup, unlike the real scanner
+path in scanner/scan_repo.py.
 """
 
 from __future__ import annotations
@@ -21,19 +24,19 @@ from pathlib import Path
 from ..analyzer import analyze
 from ..config import settings
 from ..dataset.cvefixes_loader import get_pairs
-from ..schemas import Finding, JustificationLevel, Language
+from ..schemas import Finding, Language
 
 logger = logging.getLogger("vulnscan.pipeline.run_analysis")
 
 
 async def _analyze_pair_variant(
     *, pair_id: str, variant: str, code: str, function_name: str,
-    language: Language, level: JustificationLevel, semaphore: asyncio.Semaphore,
+    language: Language, semaphore: asyncio.Semaphore,
 ) -> dict:
     async with semaphore:
         try:
             findings: list[Finding] = await analyze(
-                code=code, function_name=function_name, language=language, level=level
+                code=code, function_name=function_name, language=language
             )
             return {
                 "pair_id": pair_id,
@@ -49,7 +52,6 @@ async def _analyze_pair_variant(
 async def run_analysis(
     *,
     dataset_db_path: str,
-    level: JustificationLevel,
     run_dir: str,
     language: str = "python",
     limit: int | None = None,
@@ -70,11 +72,11 @@ async def run_analysis(
         function_name = pair.get("function_name") or "unknown_function"
         tasks.append(_analyze_pair_variant(
             pair_id=pair["pair_id"], variant="before", code=pair["func_before"],
-            function_name=function_name, language=lang, level=level, semaphore=semaphore,
+            function_name=function_name, language=lang, semaphore=semaphore,
         ))
         tasks.append(_analyze_pair_variant(
             pair_id=pair["pair_id"], variant="after", code=pair["func_after"],
-            function_name=function_name, language=lang, level=level, semaphore=semaphore,
+            function_name=function_name, language=lang, semaphore=semaphore,
         ))
 
     logger.info("Running %d analyses (concurrency=%d)...", len(tasks), max_concurrency or settings.max_concurrency)
@@ -90,8 +92,7 @@ async def run_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark phase 1: analyze all pairs.")
-    parser.add_argument("--level", choices=[l.value for l in JustificationLevel], required=True)
-    parser.add_argument("--run-dir", required=True, help="e.g. data/experiments/extensive_justification/runs/1")
+    parser.add_argument("--run-dir", required=True, help="e.g. data/experiments/1")
     parser.add_argument("--language", default="python")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dataset-db", default=None, help="Overrides VULNSCAN_DATASET_DB.")
@@ -101,7 +102,6 @@ def main() -> None:
 
     asyncio.run(run_analysis(
         dataset_db_path=args.dataset_db or settings.dataset_db_path,
-        level=JustificationLevel(args.level),
         run_dir=args.run_dir,
         language=args.language,
         limit=args.limit,

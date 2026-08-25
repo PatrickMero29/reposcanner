@@ -6,8 +6,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
+from pathlib import Path
+
+from .config import settings
 
 
 def _cmd_scan(args: argparse.Namespace) -> None:
@@ -44,13 +48,68 @@ def _cmd_build_index(args: argparse.Namespace) -> None:
 
 
 def _cmd_train_model(args: argparse.Namespace) -> None:
-    from .training.train import train_model
-    out = train_model(
+    # train_model_pairwise() is the current, actively-used trainer (margin-
+    # ranking + CE anchor). The old train_model() (independent classification)
+    # never converges -- see src/vulnscan/training/train.py's module docstring
+    # and HANDOFF §3 -- and is kept only for reference, not for actual use.
+    from .training.train import train_model_pairwise
+    out = train_model_pairwise(
         dataset_db_path=args.dataset_db, out_dir=args.out, base_model=args.base_model,
         language=args.language, epochs=args.epochs, batch_size=args.batch_size,
         learning_rate=args.learning_rate, val_fraction=args.val_fraction,
+        generic_negatives_path=args.generic_negatives, generic_negative_ratio=args.generic_negative_ratio,
+        curated_negatives_path=args.curated_negatives, curated_pairs_path=args.curated_pairs,
+        ce_weight=args.ce_weight, margin=args.margin, seed=args.seed,
     )
     print(f"Trained model saved to {out}")
+
+
+def _cmd_bench_analyze(args: argparse.Namespace) -> None:
+    from .pipeline.run_analysis import run_analysis
+    out = asyncio.run(run_analysis(
+        dataset_db_path=args.dataset_db or settings.dataset_db_path,
+        run_dir=args.run_dir, language=args.language, limit=args.limit,
+        max_concurrency=args.max_concurrency,
+    ))
+    print(f"Wrote analysis results to {out}")
+
+
+def _cmd_bench_diff(args: argparse.Namespace) -> None:
+    from .pipeline.diff_judge import run_diff_judge
+    out_path = args.out or str(Path(args.analysis_json).parent / "diff.json")
+    out = run_diff_judge(args.analysis_json, out_path)
+    print(f"Wrote diff results to {out}")
+
+
+def _cmd_bench_judge(args: argparse.Namespace) -> None:
+    # NOTE: this phase requires src/vulnscan/pipeline/judge.py's
+    # `..anthropic_client` import, which does not currently exist anywhere in
+    # this repo (settings.verifier_model is also undefined in config.py). This
+    # is real, un-migrated leftover from before the project's "zero paid API"
+    # pivot (see HANDOFF.md §1: "Never suggest reintroducing an LLM API...
+    # that door is closed permanently"). Wiring the CLI subcommand through
+    # doesn't fix that -- it will raise ModuleNotFoundError the moment this
+    # command actually runs. Deciding how to replace the LLM judge (a local
+    # heuristic? a manual review step?) is a real design decision, not
+    # something to silently patch by re-adding an API client.
+    from .pipeline.judge import run_judge
+    out_path = args.out or str(Path(args.diff_json).parent / "judged.json")
+    out = asyncio.run(run_judge(
+        diff_json_path=args.diff_json,
+        dataset_db_path=args.dataset_db or settings.dataset_db_path,
+        out_path=out_path, language=args.language,
+    ))
+    print(f"Wrote judged findings to {out}")
+
+
+def _cmd_bench_metrics(args: argparse.Namespace) -> None:
+    from .pipeline.metrics import compute_metrics
+    metrics = compute_metrics(
+        diff_json_path=args.diff_json, judged_json_path=args.judged_json, total_pairs=args.total_pairs,
+    )
+    print(json.dumps(metrics, indent=2))
+    if args.out:
+        Path(args.out).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,16 +144,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--limit", type=int, default=None, help="Cap pairs embedded (useful for a quick test run).")
     p_index.set_defaults(func=_cmd_build_index)
 
-    p_train = sub.add_parser("train-model", help="Fine-tune a local binary vulnerability classifier on your loaded dataset (runs on GPU if available).")
+    p_train = sub.add_parser("train-model", help="Fine-tune the local pairwise (margin-ranking + CE anchor) vulnerability classifier on your loaded dataset (runs on GPU if available).")
     p_train.add_argument("--dataset-db", required=True)
-    p_train.add_argument("--out", default="models/vuln-classifier")
+    p_train.add_argument("--out", required=True, help="e.g. models/vuln-classifier-v16 -- increment each run, per HANDOFF_2 §2.")
     p_train.add_argument("--base-model", default="microsoft/codebert-base")
     p_train.add_argument("--language", default="python")
-    p_train.add_argument("--epochs", type=int, default=3)
+    p_train.add_argument("--epochs", type=int, default=6)
     p_train.add_argument("--batch-size", type=int, default=8)
     p_train.add_argument("--learning-rate", type=float, default=2e-5)
     p_train.add_argument("--val-fraction", type=float, default=0.15, help="Fraction of pairs (split by pair_id, not row) held out for validation.")
+    p_train.add_argument("--margin", type=float, default=1.0)
+    p_train.add_argument("--ce-weight", type=float, default=1.0, help="Weight on the cross-entropy anchor term; don't set to 0 (reproduces the old calibration-drift bug, see HANDOFF_2 §3).")
+    p_train.add_argument("--seed", type=int, default=42)
+    p_train.add_argument("--generic-negatives", default="data/codesearchnet_negatives.jsonl", help="Path from fetch_codesearchnet_negatives.py; subject to train/val split each run.")
+    p_train.add_argument("--generic-negative-ratio", type=float, default=1.0)
+    p_train.add_argument("--curated-negatives", default="data/curated_negatives.jsonl", help="Always trained on, never held out -- see HANDOFF_2 §4.")
+    p_train.add_argument("--curated-pairs", default="data/curated_vulnerable_pairs.jsonl", help="Always trained on, never held out -- see HANDOFF_2 §4.")
     p_train.set_defaults(func=_cmd_train_model)
+
+    p_bench_analyze = sub.add_parser("bench-analyze", help="Benchmark phase 1: run the local classifier over every before/after pair in the dataset.")
+    p_bench_analyze.add_argument("--dataset-db", default=None, help="Overrides VULNSCAN_DATASET_DB.")
+    p_bench_analyze.add_argument("--run-dir", required=True, help="e.g. data/experiments/1")
+    p_bench_analyze.add_argument("--language", default="python")
+    p_bench_analyze.add_argument("--limit", type=int, default=None)
+    p_bench_analyze.add_argument("--max-concurrency", type=int, default=None)
+    p_bench_analyze.set_defaults(func=_cmd_bench_analyze)
+
+    p_bench_diff = sub.add_parser("bench-diff", help="Benchmark phase 2: bucket before/after findings into vuln_only/shared/benign_only.")
+    p_bench_diff.add_argument("analysis_json", help="Path to analysis.json from bench-analyze.")
+    p_bench_diff.add_argument("--out", default=None, help="Defaults to <run_dir>/diff.json")
+    p_bench_diff.set_defaults(func=_cmd_bench_diff)
+
+    p_bench_judge = sub.add_parser(
+        "bench-judge",
+        help="Benchmark phase 3: judge vuln_only findings against CVE ground truth. "
+             "NOT CURRENTLY RUNNABLE -- depends on a vulnscan.anthropic_client module "
+             "that doesn't exist in this repo; see the code comment in _cmd_bench_judge.",
+    )
+    p_bench_judge.add_argument("diff_json", help="Path to diff.json from bench-diff.")
+    p_bench_judge.add_argument("--dataset-db", default=None)
+    p_bench_judge.add_argument("--language", default="python")
+    p_bench_judge.add_argument("--out", default=None, help="Defaults to <run_dir>/judged.json")
+    p_bench_judge.set_defaults(func=_cmd_bench_judge)
+
+    p_bench_metrics = sub.add_parser("bench-metrics", help="Benchmark phase 4: roll diff.json + judged.json up into precision/recall/F1.")
+    p_bench_metrics.add_argument("diff_json")
+    p_bench_metrics.add_argument("judged_json")
+    p_bench_metrics.add_argument("--total-pairs", type=int, required=True)
+    p_bench_metrics.add_argument("--out", default=None)
+    p_bench_metrics.set_defaults(func=_cmd_bench_metrics)
 
     return parser
 
