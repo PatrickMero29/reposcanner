@@ -24,6 +24,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Anchor to the repo root (this script's parent directory) regardless of
+# where it's invoked from -- otherwise relative paths like "data/..." below
+# resolve against the caller's current directory instead, e.g. running this
+# from inside scripts\ silently looks for scripts\data\cvefixes.duckdb.
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 $DatasetDb = if ($env:VULNSCAN_DATASET_DB) { $env:VULNSCAN_DATASET_DB } else { "data/cvefixes.duckdb" }
 $RunDir = "data/experiments/$RunNumber"
 
@@ -45,6 +51,24 @@ $TotalPairs = python -c "from vulnscan.dataset.cvefixes_loader import get_pairs;
 if ($LASTEXITCODE -ne 0) { throw "Failed to count total pairs" }
 
 Write-Host "== Phase 4: metrics (total_pairs=$TotalPairs) =="
-python -m vulnscan.cli bench-metrics "$RunDir/diff.json" "$RunDir/judged.json" --total-pairs $TotalPairs |
+$MetricsLines = python -m vulnscan.cli bench-metrics "$RunDir/diff.json" "$RunDir/judged.json" --total-pairs $TotalPairs |
     Tee-Object -FilePath "$RunDir/metrics.json"
 if ($LASTEXITCODE -ne 0) { throw "Phase 4 (bench-metrics) failed" }
+
+# Append a one-line record to a running log, the same way sanity_check.py
+# already keeps sanity_check_history.jsonl -- so "what was v15's recall
+# again?" is a grep away instead of having to remember to check it and dig
+# up the right data/experiments/<N>/metrics.json.
+# Query settings directly (not $env:LOCAL_MODEL_CHECKPOINT_DIR) since that
+# only reflects a session override -- config.py also loads .env via
+# python-dotenv, and this is what the run actually used either way.
+$CheckpointDir = python -c "from vulnscan.config import settings; print(settings.local_model_checkpoint_dir)"
+$MetricsObj = ($MetricsLines -join "`n") | ConvertFrom-Json
+$HistoryEntry = [ordered]@{
+    timestamp      = (Get-Date).ToUniversalTime().ToString("o")
+    run_number     = $RunNumber
+    checkpoint_dir = $CheckpointDir
+    metrics        = $MetricsObj
+}
+($HistoryEntry | ConvertTo-Json -Compress -Depth 5) | Add-Content -Path "data/experiments/history.jsonl" -Encoding utf8
+Write-Host "Appended to data/experiments/history.jsonl ($CheckpointDir, recall=$($MetricsObj.recall), f1=$($MetricsObj.f1))"
