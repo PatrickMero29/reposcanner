@@ -160,13 +160,24 @@ def load_from_cvefixes_sqlite(sqlite_path: str, duckdb_path: str, *, replace: bo
     run inspect_cvefixes_schema(sqlite_path) and adjust
     _CVEFIXES_EXTRACT_SQL above to match."""
     con = open_db(duckdb_path)
-    con.execute("INSTALL sqlite; LOAD sqlite;")
-    con.execute(f"ATTACH '{sqlite_path}' AS cvefixes (TYPE sqlite)")
-    if replace:
-        con.execute("DELETE FROM pairs")
-    con.execute(f"INSERT OR REPLACE INTO pairs {_CVEFIXES_EXTRACT_SQL}")
-    count = con.execute("SELECT count(*) FROM pairs").fetchone()[0]
-    con.close()
+    try:
+        con.execute("INSTALL sqlite; LOAD sqlite;")
+        # DETACH first: this function never used to clean up its own ATTACH,
+        # so a prior run that errored out (or was interrupted) between ATTACH
+        # and the normal end of this function leaves "cvefixes" attached to
+        # duckdb_path's catalog -- and DuckDB persists that across
+        # reconnects, so the next run's plain ATTACH fails with "database
+        # with name \"cvefixes\" already exists" even though nothing is
+        # currently running. IF EXISTS makes this safe to call unconditionally.
+        con.execute("DETACH DATABASE IF EXISTS cvefixes")
+        con.execute(f"ATTACH '{sqlite_path}' AS cvefixes (TYPE sqlite)")
+        if replace:
+            con.execute("DELETE FROM pairs")
+        con.execute(f"INSERT OR REPLACE INTO pairs {_CVEFIXES_EXTRACT_SQL}")
+        count = con.execute("SELECT count(*) FROM pairs").fetchone()[0]
+    finally:
+        con.execute("DETACH DATABASE IF EXISTS cvefixes")
+        con.close()
     logger.info("Loaded pairs table from CVEfixes at %s — %d Python rows.", sqlite_path, count)
     return count
 
