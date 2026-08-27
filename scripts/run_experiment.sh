@@ -68,5 +68,5 @@ entry = {
 }
 with open('data/experiments/history.jsonl', 'a', encoding='utf-8') as f:
     f.write(json.dumps(entry) + '\n')
-print(f\"Appended to data/experiments/history.jsonl ({settings.local_model_checkpoint_dir}, recall={metrics['recall']}, f1={metrics['f1']})\")
+print(f\"Appended to data/experiments/history.jsonl ({settings.local_model_checkpoint_dir}, detection_rate={metrics['detection_rate']}, noise_rate={metrics['noise_rate']}, cwe_confirmed_recall={metrics['cwe_confirmed_recall']})\")
 "

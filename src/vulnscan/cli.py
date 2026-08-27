@@ -176,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench_judge.add_argument("--out", default=None, help="Defaults to <run_dir>/judged.json")
     p_bench_judge.set_defaults(func=_cmd_bench_judge)
 
-    p_bench_metrics = sub.add_parser("bench-metrics", help="Benchmark phase 4: roll diff.json + judged.json up into precision/recall/F1.")
+    p_bench_metrics = sub.add_parser("bench-metrics", help="Benchmark phase 4: roll diff.json + judged.json up into detection/noise/CWE-attribution numbers.")
     p_bench_metrics.add_argument("diff_json")
     p_bench_metrics.add_argument("judged_json")
     p_bench_metrics.add_argument("--total-pairs", type=int, required=True)

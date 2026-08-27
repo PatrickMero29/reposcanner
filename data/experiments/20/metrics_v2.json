@@ -1,0 +1,13 @@
+{
+  "total_pairs": 2993,
+  "pairs_with_any_vuln_only_finding": 1527,
+  "detection_rate": 0.5102,
+  "benign_only_findings_total": 38,
+  "noise_rate": 0.0127,
+  "true_positive_pairs": 712,
+  "false_negative_pairs": 2281,
+  "false_positive_findings": 585,
+  "cwe_confirmed_precision": 0.549,
+  "cwe_confirmed_recall": 0.2379,
+  "cwe_confirmed_f1": 0.3319
+}

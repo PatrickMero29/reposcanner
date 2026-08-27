@@ -71,4 +71,4 @@ $HistoryEntry = [ordered]@{
     metrics        = $MetricsObj
 }
 ($HistoryEntry | ConvertTo-Json -Compress -Depth 5) | Add-Content -Path "data/experiments/history.jsonl" -Encoding utf8
-Write-Host "Appended to data/experiments/history.jsonl ($CheckpointDir, recall=$($MetricsObj.recall), f1=$($MetricsObj.f1))"
+Write-Host "Appended to data/experiments/history.jsonl ($CheckpointDir, detection_rate=$($MetricsObj.detection_rate), noise_rate=$($MetricsObj.noise_rate), cwe_confirmed_recall=$($MetricsObj.cwe_confirmed_recall))"
