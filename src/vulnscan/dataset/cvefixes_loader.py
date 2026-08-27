@@ -132,18 +132,18 @@ SELECT
     mc_after.code                                            AS func_after,
     co.msg                                                   AS commit_message,
     ('https://nvd.nist.gov/vuln/detail/' || f.cve_id)        AS nvd_url
-FROM cvefixes.method_change mc_before
-JOIN cvefixes.method_change mc_after
+FROM cvefixes_src.method_change mc_before
+JOIN cvefixes_src.method_change mc_after
     ON mc_before.file_change_id = mc_after.file_change_id
     AND mc_before.name = mc_after.name
     AND mc_before.before_change = 'True'
     AND mc_after.before_change = 'False'
-JOIN cvefixes.file_change fc ON mc_before.file_change_id = fc.file_change_id
-JOIN cvefixes.commits co ON fc.hash = co.hash
-JOIN cvefixes.fixes f ON fc.hash = f.hash
+JOIN cvefixes_src.file_change fc ON mc_before.file_change_id = fc.file_change_id
+JOIN cvefixes_src.commits co ON fc.hash = co.hash
+JOIN cvefixes_src.fixes f ON fc.hash = f.hash
 LEFT JOIN (
     SELECT cve_id, GROUP_CONCAT(cwe_id, ',') AS cwe_ids
-    FROM cvefixes.cwe_classification GROUP BY cve_id
+    FROM cvefixes_src.cwe_classification GROUP BY cve_id
 ) cwe ON f.cve_id = cwe.cve_id
 WHERE fc.programming_language = 'Python'
   AND mc_before.code IS NOT NULL AND mc_before.code != ''
@@ -162,21 +162,24 @@ def load_from_cvefixes_sqlite(sqlite_path: str, duckdb_path: str, *, replace: bo
     con = open_db(duckdb_path)
     try:
         con.execute("INSTALL sqlite; LOAD sqlite;")
-        # DETACH first: this function never used to clean up its own ATTACH,
-        # so a prior run that errored out (or was interrupted) between ATTACH
-        # and the normal end of this function leaves "cvefixes" attached to
-        # duckdb_path's catalog -- and DuckDB persists that across
-        # reconnects, so the next run's plain ATTACH fails with "database
-        # with name \"cvefixes\" already exists" even though nothing is
-        # currently running. IF EXISTS makes this safe to call unconditionally.
-        con.execute("DETACH DATABASE IF EXISTS cvefixes")
-        con.execute(f"ATTACH '{sqlite_path}' AS cvefixes (TYPE sqlite)")
+        # The source sqlite file is attached as "cvefixes_src", NOT "cvefixes"
+        # -- DuckDB names a database's own default/main catalog after its
+        # file's stem (confirmed directly: connecting to any "*/cvefixes.duckdb"
+        # makes `current_database()` return "cvefixes"), so an ATTACH ... AS
+        # cvefixes here collides with that by construction, on every single
+        # run, regardless of session history. This isn't a rare edge case:
+        # this project's own convention is naming the target file
+        # data/cvefixes.duckdb, which guarantees the collision. Whatever
+        # produced the pairs table checked into this repo did not come from
+        # a clean run of this function as it stood before this fix.
+        con.execute("DETACH DATABASE IF EXISTS cvefixes_src")
+        con.execute(f"ATTACH '{sqlite_path}' AS cvefixes_src (TYPE sqlite)")
         if replace:
             con.execute("DELETE FROM pairs")
         con.execute(f"INSERT OR REPLACE INTO pairs {_CVEFIXES_EXTRACT_SQL}")
         count = con.execute("SELECT count(*) FROM pairs").fetchone()[0]
     finally:
-        con.execute("DETACH DATABASE IF EXISTS cvefixes")
+        con.execute("DETACH DATABASE IF EXISTS cvefixes_src")
         con.close()
     logger.info("Loaded pairs table from CVEfixes at %s — %d Python rows.", sqlite_path, count)
     return count
