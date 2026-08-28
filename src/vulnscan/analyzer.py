@@ -28,7 +28,7 @@ from .embedding.index import IndexEntry
 from .embedding.retrieve import retrieve_similar_cves
 from .local_model.inference import predict as local_model_predict
 from .rules.semgrep_runner import SemgrepFinding
-from .schemas import Finding, Language
+from .schemas import ClosestCVEMatch, Finding, Language
 
 logger = logging.getLogger("vulnscan.analyzer")
 
@@ -74,6 +74,18 @@ async def analyze(
         cve_text = _format_cve_evidence(matches)
         if cve_text:
             extra_parts.append(cve_text)
+        if matches:
+            # Same top match already described in prose above -- also kept
+            # structured so reports can render it as an explicit combined
+            # confidence+similarity signal (architecture.txt Phase 6)
+            # instead of a reader having to parse it back out of text.
+            top_entry, top_score = matches[0]
+            for finding in findings:
+                finding.undesired_operation.closest_cve_match = ClosestCVEMatch(
+                    cve_id=top_entry.cve_id or "unknown CVE",
+                    cwe_ids=top_entry.cwe_ids or "unknown CWE",
+                    similarity=top_score,
+                )
     static_text = _format_static_context(static_findings)
     if static_text:
         extra_parts.append(static_text)

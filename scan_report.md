@@ -14,16 +14,17 @@ Flagged by the local classifier, grounded in static-analysis context and/or simi
 ## 1. Local classifier flagged this function as potentially vulnerable (confidence 51%). This is a binary classifier signal — no specific CWE or reachability proof is available yet; verify manually.
 
 Similar historical vulnerabilities found via embedding search (reference only):
-1. CVE-2021-3842 (CWE-1333) — similarity 0.44
-2. CVE-2023-43810 (CWE-400) — similarity 0.38
-3. CVE-2022-1813 (CWE-78) — similarity 0.38
-4. CVE-2021-41208 (CWE-476) — similarity 0.38
-5. CVE-2022-4723 (CWE-770) — similarity 0.37
+1. CVE-2023-43810 (CWE-400) — similarity 0.48
+2. CVE-2021-41124 (CWE-200) — similarity 0.48
+3. CVE-2023-6974 (CWE-918) — similarity 0.47
+4. CVE-2024-38459 (NVD-CWE-noinfo) — similarity 0.47
+5. CVE-2022-23948 (NVD-CWE-noinfo) — similarity 0.45
 
 - **File:** `redteam.py` (lines 83-104)
 - **Function:** `metric`
 - **Severity:** low
 - **Confidence:** 0.51
+- **Closest historical precedent:** CVE-2023-43810 (CWE-400) — 48% similar
 - **Commit:** `e1eed7ee97f9842083c3b718a08707d4b00ad7db`
 
 **Unsafe code:**

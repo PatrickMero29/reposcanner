@@ -55,6 +55,16 @@ def _write_ai_finding(lines: list[str], i: int, rf: RepoFinding) -> None:
     if op.cwe_ids:
         lines.append(f"- **CWE:** {', '.join(op.cwe_ids)}")
     lines.append(f"- **Confidence:** {rf.finding.confidence:.2f}")
+    if op.closest_cve_match:
+        m = op.closest_cve_match
+        # Combined confidence+similarity trust signal (architecture.txt
+        # Phase 6) as one explicit line, instead of leaving the reader to
+        # connect "Confidence" above to a similarity score buried in the
+        # prose description further down.
+        lines.append(
+            f"- **Closest historical precedent:** {m.cve_id} ({m.cwe_ids}) "
+            f"— {m.similarity:.0%} similar"
+        )
     if loc.commit_sha:
         lines.append(f"- **Commit:** `{loc.commit_sha}`")
     if op.impact:
@@ -89,7 +99,19 @@ def write_markdown_report(report: ScanReport, path: str) -> None:
                       "context and/or similar known CVEs where available.")
         lines.append("")
         _write_severity_table(lines, _severity_counts(report.ai_findings, lambda rf: rf.finding.undesired_operation.severity))
-        ai_sorted = sorted(report.ai_findings, key=lambda rf: _SEVERITY_ORDER.get(rf.finding.undesired_operation.severity, 99))
+        # Secondary sort key: confidence descending. Severity alone doesn't
+        # differentiate today (the local classifier always sets "low" --
+        # see local_model/inference.py), so without this every AI finding
+        # ties and just falls back to whatever order chunking produced them
+        # in, which isn't a ranking at all (architecture.txt's "Ranking"
+        # step in the inference pipeline, previously not actually done).
+        ai_sorted = sorted(
+            report.ai_findings,
+            key=lambda rf: (
+                _SEVERITY_ORDER.get(rf.finding.undesired_operation.severity, 99),
+                -rf.finding.confidence,
+            ),
+        )
         for i, rf in enumerate(ai_sorted, start=1):
             _write_ai_finding(lines, i, rf)
 

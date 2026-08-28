@@ -51,6 +51,19 @@ class Severity(str, Enum):
 # Shared building blocks
 # ---------------------------------------------------------------------------
 
+class ClosestCVEMatch(BaseModel):
+    """The single closest historical CVE match from embedding retrieval, kept
+    structured (not just folded into the prose description) so reports can
+    render it as an explicit combined confidence+similarity trust signal —
+    see architecture.txt Phase 6. Purely additive/optional: nothing upstream
+    (judge.py, metrics.py, training) reads this field, so it can't break
+    anything that already works."""
+
+    cve_id: str = Field(..., description="e.g. 'CVE-2022-0845', or 'unknown CVE' if unlabeled.")
+    cwe_ids: str = Field(..., description="e.g. 'CWE-94', or 'unknown CWE'/an NVD placeholder if unavailable.")
+    similarity: float = Field(..., ge=0.0, le=1.0, description="Cosine similarity from embedding retrieval.")
+
+
 class UndesiredOperation(BaseModel):
     """The concrete bad thing that happens (e.g. the sink in a taint path)."""
 
@@ -59,6 +72,9 @@ class UndesiredOperation(BaseModel):
     cwe_ids: list[str] = Field(default_factory=list, description="Applicable CWE identifiers, e.g. ['CWE-89'].")
     severity: Severity = Field(..., description="Estimated severity if exploited.")
     impact: Optional[str] = Field(None, description="What an attacker could achieve, in one or two sentences.")
+    closest_cve_match: Optional[ClosestCVEMatch] = Field(
+        None, description="Top embedding-retrieval match, if retrieval is enabled and found any."
+    )
 
 
 class ProgramStep(BaseModel):
@@ -240,4 +256,3 @@ class ScanReport(BaseModel):
 
     static_findings: list[StaticFinding] = Field(default_factory=list)
     ai_findings: list[RepoFinding] = Field(default_factory=list)
-

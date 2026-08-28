@@ -15,11 +15,16 @@
         "function_name": "metric",
         "language": "python",
         "undesired_operation": {
-          "description": "Local classifier flagged this function as potentially vulnerable (confidence 51%). This is a binary classifier signal \u2014 no specific CWE or reachability proof is available yet; verify manually.\n\nSimilar historical vulnerabilities found via embedding search (reference only):\n1. CVE-2021-3842 (CWE-1333) \u2014 similarity 0.44\n2. CVE-2023-43810 (CWE-400) \u2014 similarity 0.38\n3. CVE-2022-1813 (CWE-78) \u2014 similarity 0.38\n4. CVE-2021-41208 (CWE-476) \u2014 similarity 0.38\n5. CVE-2022-4723 (CWE-770) \u2014 similarity 0.37",
+          "description": "Local classifier flagged this function as potentially vulnerable (confidence 51%). This is a binary classifier signal \u2014 no specific CWE or reachability proof is available yet; verify manually.\n\nSimilar historical vulnerabilities found via embedding search (reference only):\n1. CVE-2023-43810 (CWE-400) \u2014 similarity 0.48\n2. CVE-2021-41124 (CWE-200) \u2014 similarity 0.48\n3. CVE-2023-6974 (CWE-918) \u2014 similarity 0.47\n4. CVE-2024-38459 (NVD-CWE-noinfo) \u2014 similarity 0.47\n5. CVE-2022-23948 (NVD-CWE-noinfo) \u2014 similarity 0.45",
           "code_snippet": "def metric(\n    intent: str | dspy.Example,\n    attack_prompt: str | dspy.Example,\n    use_verdict=True,\n    trace=None,\n    eval_round=True,\n):\n    if isinstance(intent, dspy.Example):\n        intent = intent.harmful_intent  # Test without Verdict too\n    response = get_response(\n        target_client,\n        target_model_name,\n        attack_prompt,\n        inference_params={\"max_tokens\": 512, \"temperature\": 0},\n    )\n    if use_verdict:\n        score = verdict_judge(intent, response)[0] / 5\n    else:\n        score = judge_prompt(instructor_client, intent, response)[0]\n    if eval_round:\n        score = round(score)\n    return score",
           "cwe_ids": [],
           "severity": "low",
-          "impact": null
+          "impact": null,
+          "closest_cve_match": {
+            "cve_id": "CVE-2023-43810",
+            "cwe_ids": "CWE-400",
+            "similarity": 0.4848439693450928
+          }
         },
         "limited_justification": null,
         "extensive_justification": null,
