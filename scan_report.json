@@ -1,82 +1,31 @@
 {
-  "static_finding_count": 5,
-  "ai_finding_count": 0,
-  "static_findings": [
+  "static_finding_count": 0,
+  "ai_finding_count": 1,
+  "static_findings": [],
+  "ai_findings": [
     {
       "location": {
-        "repo": "C:\\ctf_work",
-        "file_path": "Old MetaCTF\\Untitled-1.py",
-        "start_line": 18,
-        "end_line": 18,
-        "commit_sha": "9ca1824e4d52251a0a5b2f8066f8cf1ea6473552"
+        "repo": "C:\\dspy-redteam",
+        "file_path": "redteam.py",
+        "start_line": 83,
+        "end_line": 104,
+        "commit_sha": "e1eed7ee97f9842083c3b718a08707d4b00ad7db"
       },
-      "rule_id": "python.lang.security.audit.eval-detected.eval-detected",
-      "message": "Detected the use of eval(). eval() can be dangerous if used to evaluate dynamic content. If this content can be input from outside the program, this may be a code injection vulnerability. Ensure evaluated content is not definable by external sources.",
-      "severity": "medium",
-      "cwe_ids": [
-        "CWE-95"
-      ]
-    },
-    {
-      "location": {
-        "repo": "C:\\ctf_work",
-        "file_path": "hashcat-7.1.2\\tools\\mozilla2hashcat.py",
-        "start_line": 120,
-        "end_line": 120,
-        "commit_sha": "9ca1824e4d52251a0a5b2f8066f8cf1ea6473552"
+      "finding": {
+        "function_name": "metric",
+        "language": "python",
+        "undesired_operation": {
+          "description": "Local classifier flagged this function as potentially vulnerable (confidence 51%). This is a binary classifier signal \u2014 no specific CWE or reachability proof is available yet; verify manually.\n\nSimilar historical vulnerabilities found via embedding search (reference only):\n1. CVE-2021-3842 (CWE-1333) \u2014 similarity 0.44\n2. CVE-2023-43810 (CWE-400) \u2014 similarity 0.38\n3. CVE-2022-1813 (CWE-78) \u2014 similarity 0.38\n4. CVE-2021-41208 (CWE-476) \u2014 similarity 0.38\n5. CVE-2022-4723 (CWE-770) \u2014 similarity 0.37",
+          "code_snippet": "def metric(\n    intent: str | dspy.Example,\n    attack_prompt: str | dspy.Example,\n    use_verdict=True,\n    trace=None,\n    eval_round=True,\n):\n    if isinstance(intent, dspy.Example):\n        intent = intent.harmful_intent  # Test without Verdict too\n    response = get_response(\n        target_client,\n        target_model_name,\n        attack_prompt,\n        inference_params={\"max_tokens\": 512, \"temperature\": 0},\n    )\n    if use_verdict:\n        score = verdict_judge(intent, response)[0] / 5\n    else:\n        score = judge_prompt(instructor_client, intent, response)[0]\n    if eval_round:\n        score = round(score)\n    return score",
+          "cwe_ids": [],
+          "severity": "low",
+          "impact": null
+        },
+        "limited_justification": null,
+        "extensive_justification": null,
+        "confidence": 0.5088018774986267
       },
-      "rule_id": "python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1",
-      "message": "Detected SHA1 hash algorithm which is considered insecure. SHA1 is not collision resistant and is therefore not suitable as a cryptographic signature. Use SHA256 or SHA3 instead.",
-      "severity": "medium",
-      "cwe_ids": [
-        "CWE-327"
-      ]
-    },
-    {
-      "location": {
-        "repo": "C:\\ctf_work",
-        "file_path": "hashcat-7.1.2\\tools\\mozilla2hashcat.py",
-        "start_line": 122,
-        "end_line": 122,
-        "commit_sha": "9ca1824e4d52251a0a5b2f8066f8cf1ea6473552"
-      },
-      "rule_id": "python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1",
-      "message": "Detected SHA1 hash algorithm which is considered insecure. SHA1 is not collision resistant and is therefore not suitable as a cryptographic signature. Use SHA256 or SHA3 instead.",
-      "severity": "medium",
-      "cwe_ids": [
-        "CWE-327"
-      ]
-    },
-    {
-      "location": {
-        "repo": "C:\\ctf_work",
-        "file_path": "hashcat-7.1.2\\tools\\mozilla2hashcat.py",
-        "start_line": 145,
-        "end_line": 145,
-        "commit_sha": "9ca1824e4d52251a0a5b2f8066f8cf1ea6473552"
-      },
-      "rule_id": "python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1",
-      "message": "Detected SHA1 hash algorithm which is considered insecure. SHA1 is not collision resistant and is therefore not suitable as a cryptographic signature. Use SHA256 or SHA3 instead.",
-      "severity": "medium",
-      "cwe_ids": [
-        "CWE-327"
-      ]
-    },
-    {
-      "location": {
-        "repo": "C:\\ctf_work",
-        "file_path": "hashcat-7.1.2\\tools\\virtualbox2hashcat.py",
-        "start_line": 15,
-        "end_line": 15,
-        "commit_sha": "9ca1824e4d52251a0a5b2f8066f8cf1ea6473552"
-      },
-      "rule_id": "python.lang.security.use-defused-xml.use-defused-xml",
-      "message": "The Python documentation recommends using `defusedxml` instead of `xml` because the native Python `xml` library is vulnerable to XML External Entity (XXE) attacks. These attacks can leak confidential data and \"XML bombs\" can cause denial of service.",
-      "severity": "high",
-      "cwe_ids": [
-        "CWE-611"
-      ]
+      "verification": null
     }
-  ],
-  "ai_findings": []
+  ]
 }
