@@ -66,7 +66,11 @@ COMMIT_URL_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/commit/([0-9a-fA-F]{7,4
 # application code at all. Filtered at both the file-path level (skips the
 # whole file, cheaper) and the function-name level (catches a test method
 # living in a non-conventionally-named file, or a helper test class).
-TEST_PATH_RE = re.compile(r"(^|/)tests?/|(^|/)test_[^/]+\.py$|_test\.py$")
+TEST_PATH_RE = re.compile(
+    r"(^|/)(tests?|e2e|specs?|__tests__|fixtures|cypress)/"
+    r"|(^|/)(test_[^/]+|conftest|[^/]+_spec|spec_[^/]+)\.py$"
+    r"|_test\.py$"
+)
 TEST_NAME_RE = re.compile(r"(^|\.)test_|^Test")
 
 
