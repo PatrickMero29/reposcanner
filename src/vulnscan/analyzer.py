@@ -59,10 +59,16 @@ async def analyze(
     function_name: str,
     language: Language,
     static_findings: list[SemgrepFinding] | None = None,
+    pair_id: str | None = None,
 ) -> list[Finding]:
     """Run the local classifier on one function, then enrich any positive
     finding with CVE-retrieval and Semgrep context for a human reviewer.
     Never raises — see local_model/inference.py for the degradation story.
+
+    pair_id: only set by run_analysis.py (the benchmark), which knows which
+    dataset row it's analyzing and needs to exclude that row from its own
+    retrieval results — see retrieve_similar_cves' docstring. Real scans
+    leave this None.
     """
     findings = await local_model_predict(code=code, function_name=function_name, language=language)
     if not findings:
@@ -70,7 +76,7 @@ async def analyze(
 
     extra_parts: list[str] = []
     if settings.enable_retrieval:
-        matches = retrieve_similar_cves(code)
+        matches = retrieve_similar_cves(code, exclude_pair_id=pair_id)
         cve_text = _format_cve_evidence(matches)
         if cve_text:
             extra_parts.append(cve_text)
@@ -80,11 +86,22 @@ async def analyze(
             # confidence+similarity signal (architecture.txt Phase 6)
             # instead of a reader having to parse it back out of text.
             top_entry, top_score = matches[0]
+            # Cosine similarity is mathematically bounded to [0, 1] here (the
+            # embeddings are normalized, non-negative-similarity is what
+            # this index expects), but float32 dot-product/normalization
+            # arithmetic can round a should-be-exactly-1.0 value (e.g. the
+            # index containing this exact function, or a near-duplicate --
+            # which happens constantly during bench-analyze specifically
+            # *because* the index is built from the same dataset being
+            # benchmarked) to something like 1.0000001192092896. Clamp here
+            # rather than loosen ClosestCVEMatch's schema bound, since a
+            # genuinely out-of-range value would still be worth catching.
+            clamped_score = max(0.0, min(1.0, top_score))
             for finding in findings:
                 finding.undesired_operation.closest_cve_match = ClosestCVEMatch(
                     cve_id=top_entry.cve_id or "unknown CVE",
                     cwe_ids=top_entry.cwe_ids or "unknown CWE",
-                    similarity=top_score,
+                    similarity=clamped_score,
                 )
     static_text = _format_static_context(static_findings)
     if static_text:

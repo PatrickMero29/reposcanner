@@ -36,7 +36,7 @@ async def _analyze_pair_variant(
     async with semaphore:
         try:
             findings: list[Finding] = await analyze(
-                code=code, function_name=function_name, language=language
+                code=code, function_name=function_name, language=language, pair_id=pair_id
             )
             return {
                 "pair_id": pair_id,
