@@ -1,14 +1,9 @@
 # vulnscan
 
-A multi-language vulnerability scanner with **no paid API dependency**: Semgrep runs first as a
-fast, free, local pre-filter; a classifier you train yourself (fine-tuned CodeBERT, runs on your
-own GPU or CPU) is the "AI engine" stage. Originally built as a generalization of
-[ZeroPath's opus-benchmark](https://github.com/ZeroPathAI/opus-benchmark); the project has since
-moved away from calling any LLM API at inference time — see `architecture.txt` for the full
-design rationale.
-
-Currently supports **Python** only. Adding a language means writing one new chunker (see
-"Adding a language" below) — nothing else in the pipeline needs to change.
+A fully local, no-paid-API vulnerability scanner for Python code: a Semgrep static-analysis
+pre-filter feeds a self-trained code classifier, which is enriched with local CVE-similarity
+retrieval for human reviewers. No LLM API call happens anywhere in the scan path — that's a
+firm design constraint, not a missing feature (see "Why no LLM API" below).
 
 ## Architecture
 
@@ -16,19 +11,35 @@ Currently supports **Python** only. Adding a language means writing one new chun
 Repository
     │
     ▼
-Semgrep pre-filter (free, local, fast)
+Semgrep pre-filter (free, local, fast — custom rules layered on p/security-audit)
     │  only flagged functions continue ──▶ everything else is skipped
     ▼
-Local classifier (your trained model — see src/vulnscan/training/)
+Local classifier (pairwise margin-ranking + cross-entropy anchor, fine-tuned CodeBERT)
+    │
+    ▼
+CVE-retrieval enrichment (local sentence-embedding index — reference only, not fed back into the model)
     │
     ▼
 Report: static_findings (Semgrep) + ai_findings (classifier), reported separately
 ```
 
-Both stages fail **open**: if Semgrep isn't installed or finds nothing, every function still
-gets analyzed rather than the scan silently reporting zero results. If no classifier has been
-trained yet, `vulnscan scan` still works and gives you Semgrep's findings — real, useful output
-with zero setup beyond `pip install -e ".[semgrep]"`.
+Every stage fails **open**: if Semgrep isn't installed, everything goes to the classifier
+instead of being silently dropped. If no classifier has been trained yet, `vulnscan scan` still
+returns Semgrep's findings. If the embeddings extra isn't installed, retrieval quietly no-ops.
+
+Currently supports **Python only**. Adding a language means writing one new chunker (see
+"Adding a language" below) — nothing else in the pipeline changes.
+
+## Why no LLM API
+
+The project originally called Claude with prompt-engineered reasoning (justification levels,
+forced tool-use, a verifier pass) as the "AI engine." That entire path has been replaced by a
+classifier you train yourself and run on your own hardware. The remaining prompt-construction
+code (`prompts.py`) and the old justification-level schemas are left in place for reference but
+are not on the active scan path — `analyzer.py`'s only job now is enriching a classifier finding
+with CVE-retrieval and Semgrep context, never feeding that context back into the model (a
+fine-tuned encoder's input should match its training distribution: raw code, not code mixed with
+hints it never saw during training).
 
 ## Setup
 
@@ -36,153 +47,159 @@ with zero setup beyond `pip install -e ".[semgrep]"`.
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
+pytest   # confirms the install works
 ```
 
-No `.env` API key is required anymore — see `.env.example` for the (all optional) tuning knobs.
+No API key is required for any part of this project.
 
-Run the tests to confirm the install works:
-
-```bash
-pytest
-```
-
-## Scanner mode (use this first — works today, no training required)
+## Scanner mode (works today, no training required)
 
 ```bash
 pip install -e ".[semgrep]"
-vulnscan scan /path/to/some/repo --out report
+vulnscan scan /path/to/some/repo --out report --format both
 ```
 
-This walks the repo, runs Semgrep across it, extracts Python functions (via `ast`, see
-`src/vulnscan/chunking/python_chunker.py`) for whichever ones Semgrep flagged, and — once you've
-trained a model (see below) — runs those through your local classifier too. Writes `report.json`
-and `report.md`, each with two clearly separate sections: Semgrep's raw findings, and the
-classifier's.
+Walks the repo, runs Semgrep, extracts flagged Python functions via `ast`
+(`src/vulnscan/chunking/python_chunker.py`), and — once a model is trained — runs those through
+the local classifier too. Writes `report.json` and `report.md` with static and AI findings kept
+in clearly separate sections.
 
 ```bash
-vulnscan scan /path/to/repo --no-semgrep                          # analyze every function, skip the pre-filter
+vulnscan scan /path/to/repo --no-semgrep                                    # skip the pre-filter, analyze every function
 vulnscan scan /path/to/repo --semgrep-config p/security-audit --semgrep-config p/secrets
 ```
 
+Custom Semgrep rules live in `semgrep_rules/supplementary_rules.yaml`, added because
+`p/security-audit`'s taint-based rules can miss sinks with no visible caller providing taint
+context (confirmed for command injection, path traversal, and SQL injection specifically —
+verified 3/3 caught with 0 false positives across safe counterparts). These load automatically
+alongside `p/security-audit` if the file exists.
+
 ## Training your own classifier
-
-This is the part that replaces the old Claude-based "AI engine." It's a **binary** classifier
-(vulnerable / not vulnerable) fine-tuned from a pretrained code encoder — deliberately narrow in
-scope per the project's own design notes in `architecture.txt`: no CFG/DFG graph construction, no
-multi-class CWE prediction yet, just the smallest version that could plausibly work, trained on
-data you already have.
-
-**1. Load a labeled dataset** (see "Benchmark dataset" below for where this comes from):
 
 ```bash
 vulnscan bench-load --csv my_pairs.csv --dataset-db data/cvefixes.duckdb
-```
-
-**2. Train:**
-
-```bash
 pip install -e ".[ml]"   # torch + transformers + scikit-learn + accelerate — GPU used automatically if available
 vulnscan train-model --dataset-db data/cvefixes.duckdb --out models/vuln-classifier
 ```
 
-Runs on GPU automatically if `torch.cuda.is_available()`, falls back to CPU otherwise (slow, but
-works for a quick smoke test on a tiny dataset). Splits your data by `pair_id` — not by row —
-before train/val, so the vulnerable and fixed versions of the same function never end up on
-opposite sides of the split (a common source of inflated benchmark numbers in this space; see the
-research-critique notes in `architecture.txt`).
+`train-model` runs `train_model_pairwise` — a pairwise margin-ranking objective with a
+cross-entropy anchor term (`--margin`, `--ce-weight`), not plain independent binary
+classification. That's a deliberate choice: the earlier independent-classification trainer
+(kept in `train.py` for reference only) never converged.
 
-**3. Use it:** once training finishes, `models/vuln-classifier/config.json` exists, and
-`vulnscan scan` automatically starts using it — no flag needed. Delete/move that directory to go
-back to Semgrep-only scanning.
+A few things the trainer handles that are easy to get wrong with this kind of data:
 
-Tuning knobs (`.env`): `LOCAL_MODEL_CHECKPOINT_DIR`, `LOCAL_MODEL_BASE` (default
-`microsoft/codebert-base`), `LOCAL_MODEL_CONFIDENCE_THRESHOLD` (default 0.5 — raise it to reduce
-false positives, at the cost of recall).
+- **Splits by `pair_id`, not by row**, so a function's vulnerable and fixed versions never land
+  on opposite sides of train/val — a common source of inflated benchmark numbers.
+- **Filters truncation collisions**: if a before/after pair's differing lines fall past
+  `max_length` after tokenization, both versions collapse to an identical input with opposite
+  labels — directly contradictory training data. This affects roughly 12% of a real CVEfixes
+  run and is filtered out by default (`--filter-truncation-collisions`, on by default).
+- **Curated negatives and contrastive pairs are always trained on, never held out** — added
+  after specific, diagnosed failure modes (e.g. the model generalizing "database cursor code =
+  safe" too broadly until given an explicit `sql_injection` / `sql_parameterized` contrastive
+  pair). Generic CodeSearchNet-derived negatives, by contrast, are subject to the normal
+  train/val split.
 
-**Known limitation, stated plainly:** this model predicts *vulnerable or not*, nothing more — no
-CWE classification, no reachability explanation, no exploit narrative. That richer output was
-what the old Claude-based analyzer produced via prompting; a fine-tuned classifier doesn't have
-an equivalent built in. Extending to multi-class CWE prediction is the natural next step once the
-binary case is validated (see `architecture.txt`'s Phase 5/6) — don't skip straight to it before
-confirming the binary classifier actually generalizes on held-out data.
+Once training finishes, `models/vuln-classifier/config.json` exists and `vulnscan scan`
+picks it up automatically — no flag needed. Delete/move that directory to fall back to
+Semgrep-only scanning.
 
-## Benchmark dataset
+**Known limitation:** the classifier predicts *vulnerable or not*, nothing more — no CWE
+classification, no reachability explanation. Extending to multi-class CWE prediction is the
+natural next step once the binary case is validated on held-out data — see `architecture.txt`.
 
-Both training and the CVE-retrieval index (below) read from the same local `pairs` table (see
-`src/vulnscan/dataset/schema.sql`) — any CVE-labeled dataset gets converted into this shape
-first.
+## Benchmark harness
 
-**Option A — bring your own CSV** (recommended to start; no dependency on any one dataset's
-internal schema). Columns: `pair_id, cve_id, cwe_ids, language, repo, file_path, function_name,
-func_before, func_after, commit_message, nvd_url`.
+Training and CVE retrieval both read from the same local `pairs` table
+(`src/vulnscan/dataset/schema.sql`). Evaluating the classifier against labeled ground truth is a
+four-phase local pipeline — no API calls anywhere in it:
 
-**Option B — [CVEfixes](https://github.com/secureIT-project/CVEfixes)**, a public dataset of
-CVE-labeled fix commits across many languages including Python:
+```bash
+vulnscan bench-analyze --run-dir data/experiments/1 --dataset-db data/cvefixes.duckdb
+vulnscan bench-diff data/experiments/1/analysis.json
+vulnscan bench-judge data/experiments/1/diff.json --dataset-db data/cvefixes.duckdb
+vulnscan bench-metrics data/experiments/1/diff.json data/experiments/1/judged.json
+```
+
+1. **bench-analyze** — runs the classifier over every before/after pair in the dataset.
+2. **bench-diff** — buckets findings into `vuln_only` / `shared` / `benign_only` by comparing the
+   before and after version of each pair.
+3. **bench-judge** — decides whether each `vuln_only` finding actually matches the pair's labeled
+   CVE/CWE. This used to be an LLM call; it's now a deterministic local heuristic that extracts
+   `CWE-XXX` mentions via regex from the finding's enriched description text (the classifier
+   itself never emits structured CWE IDs) and compares them against CVEfixes' own CWE labels —
+   which are themselves incomplete (~19% of pairs use NVD's "no info" placeholders rather than a
+   real CWE, handled explicitly rather than treated as a false mismatch).
+4. **bench-metrics** — rolls diff + judged results up into detection rate, noise rate, and
+   CWE-attribution numbers.
+
+**Bring your own CSV** (recommended — no dependency on one dataset's internal schema). Columns:
+`pair_id, cve_id, cwe_ids, language, repo, file_path, function_name, func_before, func_after,
+commit_message, nvd_url`.
+
+**Or use [CVEfixes](https://github.com/secureIT-project/CVEfixes)** directly:
 
 ```python
 from vulnscan.dataset.cvefixes_loader import inspect_cvefixes_schema, load_from_cvefixes_sqlite
 
-# CVEfixes' internal column names have drifted across releases — check yours first:
-print(inspect_cvefixes_schema("CVEfixes.db"))
-# If src/vulnscan/dataset/cvefixes_loader.py's _CVEFIXES_EXTRACT_SQL doesn't match what you
-# see above, adjust the table/column names there, then:
+print(inspect_cvefixes_schema("CVEfixes.db"))  # column names drift across releases — check first
 load_from_cvefixes_sqlite("CVEfixes.db", "data/cvefixes.duckdb")
 ```
 
 ## CVE retrieval (optional)
 
-The scanner can annotate a positive classifier finding with similar historical CVEs, via a local,
-free embedding index (no API calls) over your loaded `pairs` table — purely informational context
-for a human reviewer, not fed back into the classifier itself (a fine-tuned encoder's input
-should match its training distribution: raw code, not code mixed with retrieved hints it never
-saw during training).
+Annotates a positive classifier finding with similar historical CVEs via a local, free embedding
+index over the loaded `pairs` table — informational context for a human reviewer only, never fed
+back into the classifier.
 
 ```bash
 pip install -e ".[embeddings]"
 vulnscan build-index --dataset-db data/cvefixes.duckdb --out data/cve_index
 ```
 
-Once built, `vulnscan scan` picks it up automatically. Set `ENABLE_RETRIEVAL=false` in `.env` to
-turn it off.
+Picked up automatically by `vulnscan scan` once built. Set `ENABLE_RETRIEVAL=false` in `.env` to
+disable.
 
 ## Adding a language
 
 1. Write `src/vulnscan/chunking/<lang>_chunker.py` exposing `chunk_file(path, source) -> list[CodeChunk]`.
 2. Register it in `CHUNKERS_BY_EXTENSION` in `src/vulnscan/chunking/__init__.py`.
-3. The chunker is the only language-specific piece — Semgrep already supports most mainstream
-   languages out of the box, and training/inference just need code text, so nothing else needs
-   to change.
+3. That's it — Semgrep already supports most mainstream languages, and training/inference only
+   need code text.
 
 ## Project layout
 
 ```
 src/vulnscan/
-├── schemas.py           # Finding / StaticFinding / ScanReport data model — read this first
-├── config.py              # env-var settings (no API key needed anymore)
-├── analyzer.py              # orchestrates: local classifier -> enrich with CVE/semgrep context
-├── cli.py                     # `vulnscan <command>` entrypoint
+├── schemas.py         # Finding / StaticFinding / ScanReport data model — read this first
+├── config.py           # env-var settings (no API key needed)
+├── analyzer.py           # orchestrates: local classifier -> enrich with CVE/semgrep context
+├── cli.py                  # `vulnscan <command>` entrypoint
+├── prompts.py                # legacy LLM prompt construction — not on the active scan path
 ├── chunking/                   # source file -> per-function chunks (Python only so far)
-├── dataset/                     # CVE-labeled dataset ingestion into DuckDB
-├── embedding/                    # optional CVE similarity index for retrieval-grounded reporting
-├── rules/                         # Semgrep CLI wrapper (the fast pre-filter stage)
-├── local_model/                    # inference: loads a trained checkpoint, runs the classifier
-├── training/                        # dataset construction + fine-tuning script
-└── scanner/                          # repo scanner + JSON/Markdown/(future GitHub) reports
+├── dataset/                      # CVE-labeled dataset ingestion into DuckDB
+├── embedding/                      # optional CVE similarity index for retrieval-grounded reporting
+├── rules/                            # Semgrep CLI wrapper (the fast pre-filter stage)
+├── local_model/                        # inference: loads a trained checkpoint, runs the classifier
+├── training/                             # dataset construction + pairwise fine-tuning script
+├── pipeline/                                # local 4-phase benchmark harness (no API calls)
+└── scanner/                                   # repo scanner + JSON/Markdown reports (GitHub reporting is a stub)
 ```
 
 ## Known limitations / next steps
 
-- Only Python chunking is implemented; Java/C/C++ chunkers are the natural next step.
+- Only Python chunking is implemented; Java/C/C++ chunchers are the natural next step.
 - The classifier is binary only (vulnerable/not) — no CWE classification or reachability
-  explanation yet. See "Training your own classifier" above for the reasoning behind not skipping
-  straight to the more ambitious version.
-- GitHub issue/PR-comment reporting is a stub (`scanner/report_github.py`) — needs a dedupe
-  strategy so repeat scans don't spam duplicate issues.
+  explanation. See "Training your own classifier" for why this isn't skipped straight to.
+- GitHub issue/PR-comment reporting (`scanner/report_github.py`) is a stub — planned shape is
+  documented in the file, but it needs a dedupe strategy before it's usable so repeat scans
+  don't spam duplicate issues.
 - The default embedding model (`flax-sentence-embeddings/st-codesearch-distilroberta-base`) is a
   general code-search model, not vulnerability-specific. Override via `EMBEDDING_MODEL` in `.env`.
 - The CVEfixes column mapping in `dataset/cvefixes_loader.py` is best-effort and may need
   adjusting to your specific downloaded release (see `inspect_cvefixes_schema()`).
-- Removed entirely as of this version: any dependency on Claude, Gemini, or any other paid LLM
-  API. If you're reading old conversation history or commit messages that mention `ANTHROPIC_API_KEY`,
-  `anthropic_client.py`, or justification levels (`no_justification`/`extensive_justification`/
-  etc.) — that's all gone. The "AI engine" is exclusively `src/vulnscan/local_model/` now.
+- There is a firm project policy against reintroducing a paid LLM API dependency at inference
+  time. Improvements to output quality (CWE classification, reachability explanation) are
+  expected to come from the local classifier/pipeline, not from calling out to an API.

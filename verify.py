@@ -2,7 +2,7 @@ import csv
 import random
 
 csv.field_size_limit(10_000_000)
-with open("data/ghsa_python.csv", encoding="utf-8") as f:
+with open("data/ghsa_python_v2.csv", encoding="utf-8") as f:
     rows = list(csv.DictReader(f))
 
 print("total rows:", len(rows))
