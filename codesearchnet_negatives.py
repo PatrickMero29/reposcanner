@@ -305,6 +305,10 @@ _CURATED_VULNERABLE_SAFE_PAIRS: list[tuple[str, str]] = [
         "def apply_user_script(script_text, data):\n    local_vars = {'data': data}\n    exec(script_text, {}, local_vars)\n    return local_vars.get('output')\n",
         "def apply_user_script(transform_name, data):\n    transform = REGISTERED_TRANSFORMS[transform_name]\n    return transform(data)\n",
     ),
+    (
+        "def compute(user_expr):\n    return eval(user_expr)\n",
+        "def eval_program(self, program, inputs):\n    return self.executor.run(program, inputs)\n",
+    ),
 ]
 
 # Try known-good mirrors in order. CodeSearchNet's own HF loading script is

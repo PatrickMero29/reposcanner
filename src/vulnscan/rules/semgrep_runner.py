@@ -51,6 +51,19 @@ class SemgrepFinding:
     cwe_ids: list[str]
 
 
+@dataclass
+class SemgrepRunResult:
+    """status:
+      ok           — semgrep ran (exit 0 or 1); findings may be empty
+      unavailable  — not installed
+      timeout      — timed out
+      error        — nonzero exit other than 0/1, missing JSON, parse failure
+    """
+    findings: list[SemgrepFinding]
+    status: str
+    returncode: int | None = None
+
+
 def is_semgrep_available() -> bool:
     return shutil.which("semgrep") is not None
 
@@ -87,15 +100,25 @@ def run_semgrep(
     Never raises: any failure (semgrep not installed, timeout, bad JSON,
     non-zero exit for a real error) is logged and results in an empty list,
     so a broken semgrep install degrades to "no pre-filter" rather than
-    breaking the scan.
+    breaking the scan. Prefer run_semgrep_ex when the caller needs to
+    distinguish a clean empty run from a failed run.
     """
+    return run_semgrep_ex(target_path, config=config, timeout=timeout).findings
+
+
+def run_semgrep_ex(
+    target_path: str,
+    *,
+    config: str | list[str] = "auto",
+    timeout: int = 300,
+) -> SemgrepRunResult:
     if not is_semgrep_available():
         logger.info(
             "semgrep not found on PATH — skipping static pre-filter, every function will go "
             "straight to the AI analyzer. Install with `pip install semgrep` (or `pip install "
             '-e ".[semgrep]"`) to enable it.'
         )
-        return []
+        return SemgrepRunResult(findings=[], status="unavailable")
 
     if isinstance(config, str):
         configs = [c.strip() for c in config.split(",") if c.strip()]
@@ -128,16 +151,13 @@ def run_semgrep(
                 "semgrep timed out after %ss on %s — continuing without static pre-filter for this run.",
                 timeout, target_path,
             )
-            return []
+            return SemgrepRunResult(findings=[], status="timeout")
         except FileNotFoundError:
             logger.info("semgrep not found — skipping static pre-filter.")
-            return []
+            return SemgrepRunResult(findings=[], status="unavailable")
 
-        # semgrep's exit codes: 0 = ran clean with no findings, 1 = ran clean
-        # WITH findings (not an error). Anything else is a real problem, but
-        # we still try to parse whatever JSON it managed to write, since
-        # partial results (e.g. one file failed to parse) beat nothing.
-        if result.returncode not in (0, 1):
+        ran_clean = result.returncode in (0, 1)
+        if not ran_clean:
             logger.warning(
                 "semgrep exited with code %s on %s: %s",
                 result.returncode, target_path, (result.stderr or "")[:2000],
@@ -145,13 +165,14 @@ def run_semgrep(
 
         if not json_out_path.exists():
             logger.warning("semgrep produced no JSON output for %s — continuing without static pre-filter.", target_path)
-            return []
+            status = "ok" if ran_clean else "error"
+            return SemgrepRunResult(findings=[], status=status, returncode=result.returncode)
 
         try:
             payload = json.loads(json_out_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             logger.warning("Could not parse semgrep JSON output for %s — continuing without static pre-filter.", target_path)
-            return []
+            return SemgrepRunResult(findings=[], status="error", returncode=result.returncode)
 
     findings: list[SemgrepFinding] = []
     for r in payload.get("results", []):
@@ -168,4 +189,5 @@ def run_semgrep(
         ))
 
     logger.info("semgrep found %d result(s) in %s (rulesets: %s)", len(findings), target_path, ", ".join(configs))
-    return findings
+    status = "ok" if ran_clean else "error"
+    return SemgrepRunResult(findings=findings, status=status, returncode=result.returncode)

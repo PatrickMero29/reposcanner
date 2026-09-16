@@ -82,3 +82,83 @@ rules:
     severity: ERROR
     metadata:
       cwe: "CWE-89: SQL Injection"
+
+  - id: pickle-deserialize
+    patterns:
+      - pattern-either:
+          - pattern: pickle.loads(...)
+          - pattern: pickle.load(...)
+    message: >-
+      pickle.loads/load deserializes arbitrary Python objects and can execute
+      code. Flagged unconditionally. Prefer json or a constrained serializer.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+
+  - id: yaml-unsafe-load
+    patterns:
+      - pattern-either:
+          - pattern: yaml.load($SRC)
+          - pattern: yaml.load($SRC, Loader=yaml.Loader)
+          - pattern: yaml.load($SRC, Loader=yaml.UnsafeLoader)
+          - pattern: yaml.load($SRC, Loader=yaml.FullLoader)
+    message: >-
+      yaml.load without a SafeLoader can construct arbitrary Python objects.
+      Use yaml.safe_load or Loader=yaml.SafeLoader.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+
+  - id: eval-exec
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+    message: >-
+      eval/exec on attacker-controlled input is code injection. Flagged
+      unconditionally. Prefer ast.literal_eval or a real parser.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"
+
+  - id: subprocess-shell-true
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.check_output(..., shell=True, ...)
+          - pattern: subprocess.check_call(..., shell=True, ...)
+    message: >-
+      subprocess invoked with shell=True. Flagged unconditionally -- if the
+      command string is built from external input this is command injection.
+      Pass a list of arguments instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+
+  - id: url-string-concat
+    patterns:
+      - pattern-either:
+          - pattern: requests.get($X + $Y, ...)
+          - pattern: requests.post($X + $Y, ...)
+          - pattern: requests.put($X + $Y, ...)
+          - pattern: requests.delete($X + $Y, ...)
+          - pattern: requests.get(f"...{$VAR}...", ...)
+          - pattern: requests.post(f"...{$VAR}...", ...)
+          - pattern: urllib.request.urlopen($X + $Y, ...)
+          - pattern: urllib.request.urlopen(f"...{$VAR}...", ...)
+          - pattern: urlopen($X + $Y, ...)
+          - pattern: urlopen(f"...{$VAR}...", ...)
+    message: >-
+      HTTP URL built via concatenation or f-string. Flagged unconditionally --
+      if any part is externally influenced this can become SSRF. Prefer a
+      hardcoded origin plus params= / a URL builder with an allowlist.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-918: Server-Side Request Forgery (SSRF)"

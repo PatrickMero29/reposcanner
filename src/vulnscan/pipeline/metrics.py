@@ -48,7 +48,15 @@ from pathlib import Path
 logger = logging.getLogger("vulnscan.pipeline.metrics")
 
 
-def compute_metrics(*, diff_json_path: str, judged_json_path: str, total_pairs: int) -> dict:
+def compute_metrics(
+    *,
+    diff_json_path: str,
+    judged_json_path: str,
+    total_pairs: int,
+    analysis_json_path: str | None = None,
+    threshold: float | None = None,
+    dataset_db_path: str | None = None,
+) -> dict:
     diff_results = json.loads(Path(diff_json_path).read_text(encoding="utf-8"))
     judged_results = {r["pair_id"]: r["judged_findings"] for r in json.loads(Path(judged_json_path).read_text(encoding="utf-8"))}
 
@@ -85,15 +93,26 @@ def compute_metrics(*, diff_json_path: str, judged_json_path: str, total_pairs: 
         if (cwe_confirmed_precision + cwe_confirmed_recall) > 0 else 0.0
     )
 
-    return {
+    out = {
         "total_pairs": total_pairs,
-        # Trustworthy on their own -- no CWE ground truth needed.
+        "legacy_finding_diff": {
+            "pairs_with_any_vuln_only_finding": pairs_with_any_vuln_only_finding,
+            "detection_rate": round(detection_rate, 4),
+            "benign_only_findings_total": benign_only_count,
+            "noise_rate": round(noise_rate, 4),
+        },
         "pairs_with_any_vuln_only_finding": pairs_with_any_vuln_only_finding,
         "detection_rate": round(detection_rate, 4),
         "benign_only_findings_total": benign_only_count,
         "noise_rate": round(noise_rate, 4),
-        # CWE-attribution accuracy, conditioned on retrieval enrichment's CWE
-        # guess -- NOT a general false-alarm rate. See module docstring.
+        "retrieval_diagnostic": {
+            "true_positive_pairs": true_positive_pairs,
+            "false_negative_pairs": false_negative_pairs,
+            "false_positive_findings": false_positive_findings,
+            "cwe_confirmed_precision": round(cwe_confirmed_precision, 4),
+            "cwe_confirmed_recall": round(cwe_confirmed_recall, 4),
+            "cwe_confirmed_f1": round(cwe_confirmed_f1, 4),
+        },
         "true_positive_pairs": true_positive_pairs,
         "false_negative_pairs": false_negative_pairs,
         "false_positive_findings": false_positive_findings,
@@ -101,6 +120,20 @@ def compute_metrics(*, diff_json_path: str, judged_json_path: str, total_pairs: 
         "cwe_confirmed_recall": round(cwe_confirmed_recall, 4),
         "cwe_confirmed_f1": round(cwe_confirmed_f1, 4),
     }
+    if analysis_json_path:
+        from .scan_metrics import compute_scan_faithful
+        from ..local_model.inference import load_checkpoint_threshold
+        t = threshold
+        if t is None:
+            t = load_checkpoint_threshold()
+        if t is None:
+            t = 0.5
+        out["scan_faithful"] = compute_scan_faithful(
+            analysis_json_path=analysis_json_path,
+            threshold=t,
+            dataset_db_path=dataset_db_path,
+        )
+    return out
 
 
 def main() -> None:

@@ -70,7 +70,7 @@ class Settings:
     # transformers). If no checkpoint exists at this path yet, the scanner
     # runs fine without it — you just get Semgrep's static findings until
     # you train a model with `vulnscan train-model`.
-    local_model_checkpoint_dir: str = os.environ.get("LOCAL_MODEL_CHECKPOINT_DIR", "models/vuln-classifier")
+    local_model_checkpoint_dir: str = os.environ.get("LOCAL_MODEL_CHECKPOINT_DIR", "models/vuln-classifier-v20")
     local_model_base: str = os.environ.get("LOCAL_MODEL_BASE", "microsoft/codebert-base")
     # "auto" resolves to cuda if available, else cpu, at inference time
     # (checked lazily inside local_model/inference.py — config.py itself
@@ -79,6 +79,9 @@ class Settings:
     local_model_device: str = os.environ.get("LOCAL_MODEL_DEVICE", "auto")
     local_model_max_length: int = int(os.environ.get("LOCAL_MODEL_MAX_LENGTH", "512"))
     local_model_confidence_threshold: float = float(os.environ.get("LOCAL_MODEL_CONFIDENCE_THRESHOLD", "0.5"))
+    local_model_failopen_confidence_threshold: float = float(
+        os.environ.get("LOCAL_MODEL_FAILOPEN_CONFIDENCE_THRESHOLD", "0.7")
+    )
 
 
 settings = Settings()

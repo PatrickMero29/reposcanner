@@ -22,10 +22,11 @@ def _make_finding() -> Finding:
 async def test_analyze_returns_empty_when_local_model_finds_nothing(monkeypatch):
     import vulnscan.analyzer as analyzer_module
 
-    async def fake_predict(*, code, function_name, language):
-        return []
+    def fake_predict_detailed(*, code, function_name, language, **kwargs):
+        from vulnscan.local_model.inference import PredictResult
+        return PredictResult(findings=[], prob_vuln=0.0, n_tokens=0)
 
-    monkeypatch.setattr(analyzer_module, "local_model_predict", fake_predict)
+    monkeypatch.setattr(analyzer_module, "predict_detailed", fake_predict_detailed)
 
     results = await analyzer_module.analyze(code="x = 1", function_name="f", language=Language.PYTHON)
     assert results == []
@@ -35,10 +36,11 @@ async def test_analyze_returns_empty_when_local_model_finds_nothing(monkeypatch)
 async def test_analyze_appends_semgrep_context_to_positive_finding(monkeypatch):
     import vulnscan.analyzer as analyzer_module
 
-    async def fake_predict(*, code, function_name, language):
-        return [_make_finding()]
+    def fake_predict_detailed(*, code, function_name, language, **kwargs):
+        from vulnscan.local_model.inference import PredictResult
+        return PredictResult(findings=[_make_finding()], prob_vuln=0.8, n_tokens=12)
 
-    monkeypatch.setattr(analyzer_module, "local_model_predict", fake_predict)
+    monkeypatch.setattr(analyzer_module, "predict_detailed", fake_predict_detailed)
     # Disable retrieval so this test only exercises the semgrep-context path.
     import dataclasses
     from vulnscan.config import settings as real_settings

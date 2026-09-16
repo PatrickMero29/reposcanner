@@ -12,6 +12,7 @@ loses the outer-scope variables it references. See `_visit_function` below.
 from __future__ import annotations
 
 import ast
+import textwrap
 
 from ..schemas import Language
 from .base import CodeChunk
@@ -48,6 +49,10 @@ def chunk_file(file_path: str, source: str) -> list[CodeChunk]:
         def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
             qualified_name = ".".join([*self.class_stack, node.name])
             code = _get_source_segment(source_lines, node)
+            if code:
+                code = textwrap.dedent(code)
+                if self.class_stack:
+                    code = f"class {self.class_stack[-1]}:\n{textwrap.indent(code, '    ')}"
             # Skip trivial stubs (pass-only / docstring-only / ellipsis bodies)
             # — nothing for the analyzer to find here and it just burns tokens.
             meaningful_body = [

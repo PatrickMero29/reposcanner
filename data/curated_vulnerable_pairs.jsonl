@@ -20,3 +20,4 @@
 {"vulnerable": "def load_report(reports_dir, name):\n    full_path = reports_dir + \"/\" + name\n    with open(full_path) as f:\n        return f.read()\n", "safe": "def load_report(reports_dir, name):\n    safe_name = os.path.basename(name)\n    full_path = os.path.join(reports_dir, safe_name)\n    with open(full_path) as f:\n        return f.read()\n"}
 {"vulnerable": "import yaml\ndef parse_config(raw):\n    return yaml.load(raw, Loader=yaml.UnsafeLoader)\n", "safe": "import yaml\ndef parse_config(raw):\n    return yaml.safe_load(raw)\n"}
 {"vulnerable": "import yaml\ndef load_pipeline_spec(raw_yaml):\n    return yaml.load(raw_yaml, Loader=yaml.UnsafeLoader)\n", "safe": "import yaml\ndef load_pipeline_spec(raw_yaml):\n    return yaml.load(raw_yaml, Loader=yaml.SafeLoader)\n"}
+{"vulnerable": "def compute(user_expr):\n    return eval(user_expr)\n", "safe": "def eval_program(self, program, inputs):\n    return self.executor.run(program, inputs)\n"}

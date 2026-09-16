@@ -1,4 +1,9 @@
-"""Expanded regression check for the local classifier -- broader than the
+"""Train-side regression suite for the local classifier.
+
+These 20 cases overlap curated training snippets by design — they are NOT a
+held-out generalization set. Use sanity_check_heldout.py for that.
+
+Expanded regression check for the local classifier -- broader than the
 original 2-example version (command injection / trivial add()) that missed
 the v8 short-code calibration gap. Covers several distinct vulnerability
 patterns at several different code lengths, and several safe counterparts

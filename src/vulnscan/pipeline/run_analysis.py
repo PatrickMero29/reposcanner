@@ -21,10 +21,11 @@ import json
 import logging
 from pathlib import Path
 
-from ..analyzer import analyze
+from ..analyzer import analyze_scored
 from ..config import settings
 from ..dataset.cvefixes_loader import get_pairs
 from ..schemas import Finding, Language
+from ..training.splits import load_split_ids
 
 logger = logging.getLogger("vulnscan.pipeline.run_analysis")
 
@@ -32,21 +33,30 @@ logger = logging.getLogger("vulnscan.pipeline.run_analysis")
 async def _analyze_pair_variant(
     *, pair_id: str, variant: str, code: str, function_name: str,
     language: Language, semaphore: asyncio.Semaphore,
+    repo: str | None = None, cwe_ids: str | None = None,
 ) -> dict:
     async with semaphore:
         try:
-            findings: list[Finding] = await analyze(
+            findings: list[Finding]
+            findings, prob, n_tokens = await analyze_scored(
                 code=code, function_name=function_name, language=language, pair_id=pair_id
             )
             return {
                 "pair_id": pair_id,
                 "variant": variant,
                 "findings": [f.model_dump(mode="json") for f in findings],
+                "prob_vuln": prob,
+                "n_tokens": n_tokens,
+                "repo": repo,
+                "cwe_ids": cwe_ids,
                 "error": None,
             }
         except Exception as exc:  # noqa: BLE001
             logger.exception("Analysis failed for pair %s (%s)", pair_id, variant)
-            return {"pair_id": pair_id, "variant": variant, "findings": [], "error": str(exc)}
+            return {
+                "pair_id": pair_id, "variant": variant, "findings": [],
+                "prob_vuln": None, "n_tokens": None, "error": str(exc),
+            }
 
 
 async def run_analysis(
@@ -56,8 +66,19 @@ async def run_analysis(
     language: str = "python",
     limit: int | None = None,
     max_concurrency: int | None = None,
+    pair_ids_path: str | None = None,
 ) -> str:
-    pairs = get_pairs(dataset_db_path, language=language, limit=limit)
+    pair_ids = None
+    if pair_ids_path:
+        path = Path(pair_ids_path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"pair-ids file not found: {pair_ids_path}. Run train-model first "
+                "(writes data/splits/test_pair_ids.json) or pass --all-pairs."
+            )
+        pair_ids = load_split_ids(path)
+        logger.info("Restricting bench-analyze to %d pair_ids from %s", len(pair_ids), pair_ids_path)
+    pairs = get_pairs(dataset_db_path, language=language, limit=limit, pair_ids=pair_ids)
     if not pairs:
         raise ValueError(
             f"No pairs found in {dataset_db_path} for language={language!r}. "
@@ -73,10 +94,12 @@ async def run_analysis(
         tasks.append(_analyze_pair_variant(
             pair_id=pair["pair_id"], variant="before", code=pair["func_before"],
             function_name=function_name, language=lang, semaphore=semaphore,
+            repo=pair.get("repo"), cwe_ids=pair.get("cwe_ids"),
         ))
         tasks.append(_analyze_pair_variant(
             pair_id=pair["pair_id"], variant="after", code=pair["func_after"],
             function_name=function_name, language=lang, semaphore=semaphore,
+            repo=pair.get("repo"), cwe_ids=pair.get("cwe_ids"),
         ))
 
     logger.info("Running %d analyses (concurrency=%d)...", len(tasks), max_concurrency or settings.max_concurrency)
@@ -96,6 +119,8 @@ def main() -> None:
     parser.add_argument("--language", default="python")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dataset-db", default=None, help="Overrides VULNSCAN_DATASET_DB.")
+    parser.add_argument("--pair-ids", default="data/splits/test_pair_ids.json")
+    parser.add_argument("--all-pairs", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -105,6 +130,7 @@ def main() -> None:
         run_dir=args.run_dir,
         language=args.language,
         limit=args.limit,
+        pair_ids_path=None if args.all_pairs else args.pair_ids,
     ))
 
 

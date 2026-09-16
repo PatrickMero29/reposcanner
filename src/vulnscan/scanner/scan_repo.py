@@ -19,7 +19,8 @@ from pathlib import Path
 from ..analyzer import analyze
 from ..chunking import chunk_source_file
 from ..config import settings
-from ..rules.semgrep_runner import SemgrepFinding, run_semgrep
+from ..dataset.filters import is_test_path
+from ..rules.semgrep_runner import SemgrepFinding, run_semgrep_ex
 from ..schemas import RepoFinding, RepoLocation, ScanReport, Severity, StaticFinding
 from .report_json import write_json_report
 from .report_markdown import write_markdown_report
@@ -49,6 +50,12 @@ def discover_files(repo_path: Path, extensions: tuple[str, ...] = (".py",)) -> l
         if not path.is_file():
             continue
         if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
+            continue
+        try:
+            rel = str(path.relative_to(repo_path)).replace("\\", "/")
+        except ValueError:
+            rel = str(path).replace("\\", "/")
+        if is_test_path(rel):
             continue
         if path.suffix in extensions:
             files.append(path)
@@ -98,19 +105,23 @@ async def scan_repo(
     # --- Stage 1: Semgrep pre-filter (fast, free, local) ---
     use_semgrep_prefilter = settings.enable_semgrep_prefilter if use_semgrep_prefilter is None else use_semgrep_prefilter
     semgrep_findings: list[SemgrepFinding] = []
+    fail_open = not use_semgrep_prefilter
+    prefilter_active = False
     if use_semgrep_prefilter:
-        semgrep_findings = run_semgrep(
+        semgrep_result = run_semgrep_ex(
             str(repo),
             config=semgrep_config or settings.semgrep_config,
             timeout=settings.semgrep_timeout,
         )
-
-    # Only narrow which functions reach the AI engine when semgrep actually
-    # produced signal. If it's unavailable, timed out, or genuinely found
-    # nothing, fail OPEN (analyze everything) rather than silently reporting
-    # zero findings — a broken/misconfigured semgrep should never look
-    # identical to "this repo is clean".
-    prefilter_active = len(semgrep_findings) > 0
+        semgrep_findings = semgrep_result.findings
+        if semgrep_result.status == "ok":
+            prefilter_active = True
+        else:
+            fail_open = True
+            logger.warning(
+                "Semgrep status=%s — failing open and classifying the whole repo.",
+                semgrep_result.status,
+            )
     semgrep_by_file = _group_semgrep_findings_by_file(semgrep_findings)
 
     static_findings = [
@@ -142,7 +153,7 @@ async def scan_repo(
 
         if prefilter_active and not matching:
             skipped_count += 1
-            return  # semgrep ran and found nothing here — skip the local model call entirely
+            return
 
         async with semaphore:
             try:
@@ -151,6 +162,8 @@ async def scan_repo(
                     function_name=chunk.function_name,
                     language=chunk.language,
                     static_findings=matching or None,
+                    chunk_start_line=chunk.start_line,
+                    fail_open=fail_open,
                 )
             except Exception:
                 logger.exception("Analysis failed for %s::%s — skipping", chunk.file_path, chunk.function_name)
@@ -178,14 +191,14 @@ async def scan_repo(
 
     if prefilter_active:
         logger.info(
-            "Semgrep flagged %d location(s); analyzing %d function chunks with the local model "
-            "(concurrency=%d)...",
-            len(semgrep_findings), len(tasks), max_concurrency or settings.max_concurrency,
+            "Semgrep ran clean with %d finding(s); analyzing overlapping function chunks with the "
+            "local model (concurrency=%d)...",
+            len(semgrep_findings), max_concurrency or settings.max_concurrency,
         )
     else:
         logger.info(
-            "No semgrep pre-filter signal — analyzing all %d function chunks with the local model "
-            "(concurrency=%d)...",
+            "Fail-open / no pre-filter — analyzing all %d function chunks with the local model "
+            "(concurrency=%d, higher confidence bar)...",
             len(tasks), max_concurrency or settings.max_concurrency,
         )
 

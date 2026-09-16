@@ -121,7 +121,7 @@ def inspect_cvefixes_schema(sqlite_path: str) -> dict[str, list[str]]:
 # manually-spot-checked-correct pairs when run against CVEfixes_meta.db.
 _CVEFIXES_EXTRACT_SQL = """
 SELECT
-    mc_before.method_change_id                              AS pair_id,
+    (mc_before.method_change_id || '-' || f.cve_id)         AS pair_id,
     f.cve_id                                                 AS cve_id,
     cwe.cwe_ids                                              AS cwe_ids,
     'python'                                                 AS language,
@@ -185,13 +185,29 @@ def load_from_cvefixes_sqlite(sqlite_path: str, duckdb_path: str, *, replace: bo
     return count
 
 
-def get_pairs(duckdb_path: str, *, language: str | None = None, limit: int | None = None) -> list[dict]:
+def get_pairs(
+    duckdb_path: str,
+    *,
+    language: str | None = None,
+    limit: int | None = None,
+    pair_ids: list[str] | None = None,
+) -> list[dict]:
     con = duckdb.connect(duckdb_path, read_only=True)
     query = "SELECT * FROM pairs"
     params: list = []
+    clauses: list[str] = []
     if language:
-        query += " WHERE language = ?"
+        clauses.append("language = ?")
         params.append(language)
+    if pair_ids is not None:
+        if not pair_ids:
+            con.close()
+            return []
+        placeholders = ", ".join(["?"] * len(pair_ids))
+        clauses.append(f"pair_id IN ({placeholders})")
+        params.extend(pair_ids)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = con.execute(query, params).fetchall()

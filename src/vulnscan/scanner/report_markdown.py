@@ -47,7 +47,8 @@ def _write_static_finding(lines: list[str], i: int, sf: StaticFinding) -> None:
 def _write_ai_finding(lines: list[str], i: int, rf: RepoFinding) -> None:
     op = rf.finding.undesired_operation
     loc = rf.location
-    lines.append(f"## {i}. {op.description}")
+    title = rf.finding.function_name or "unknown_function"
+    lines.append(f"## {i}. `{title}` flagged as potentially vulnerable")
     lines.append("")
     lines.append(f"- **File:** `{loc.file_path}` (lines {loc.start_line}-{loc.end_line})")
     lines.append(f"- **Function:** `{rf.finding.function_name}`")
@@ -70,6 +71,10 @@ def _write_ai_finding(lines: list[str], i: int, rf: RepoFinding) -> None:
     if op.impact:
         lines.append("")
         lines.append(f"**Impact:** {op.impact}")
+    lines.append("")
+    lines.append("**Classifier note:**")
+    lines.append("")
+    lines.append(op.description)
     lines.append("")
     lines.append("**Unsafe code:**")
     lines.append(f"```{rf.finding.language.value}")

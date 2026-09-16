@@ -47,29 +47,45 @@ def _cmd_build_index(args: argparse.Namespace) -> None:
     print(f"Index built at {out}")
 
 
+def _cmd_dataset_clean(args: argparse.Namespace) -> None:
+    from .dataset.clean import clean_dataset
+    summary = clean_dataset(
+        source_db=args.dataset_db,
+        cvefixes_sqlite=args.cvefixes_sqlite,
+        out_path=args.out,
+        max_per_cve=args.max_per_cve,
+        max_per_repo=args.max_per_repo,
+        language=args.language,
+        seed=args.seed,
+    )
+    print(json.dumps(summary, indent=2))
+
+
 def _cmd_train_model(args: argparse.Namespace) -> None:
-    # train_model_pairwise() is the current, actively-used trainer (margin-
-    # ranking + CE anchor). The old train_model() (independent classification)
-    # never converges -- see src/vulnscan/training/train.py's module docstring
-    # and HANDOFF §3 -- and is kept only for reference, not for actual use.
     from .training.train import train_model_pairwise
     out = train_model_pairwise(
         dataset_db_path=args.dataset_db, out_dir=args.out, base_model=args.base_model,
         language=args.language, epochs=args.epochs, batch_size=args.batch_size,
         learning_rate=args.learning_rate, val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction, split_dir=args.split_dir, resplit=args.resplit,
         generic_negatives_path=args.generic_negatives, generic_negative_ratio=args.generic_negative_ratio,
+        extra_negatives_path=args.extra_negatives,
         curated_negatives_path=args.curated_negatives, curated_pairs_path=args.curated_pairs,
         ce_weight=args.ce_weight, margin=args.margin, seed=args.seed,
+        diff_centered_crop=not args.no_diff_centered_crop,
+        filter_truncation_collisions=args.filter_truncation_collisions,
+        hard_negative_ratio=args.hard_negative_ratio,
     )
     print(f"Trained model saved to {out}")
 
 
 def _cmd_bench_analyze(args: argparse.Namespace) -> None:
     from .pipeline.run_analysis import run_analysis
+    pair_ids = None if args.all_pairs else args.pair_ids
     out = asyncio.run(run_analysis(
         dataset_db_path=args.dataset_db or settings.dataset_db_path,
         run_dir=args.run_dir, language=args.language, limit=args.limit,
-        max_concurrency=args.max_concurrency,
+        max_concurrency=args.max_concurrency, pair_ids_path=pair_ids,
     ))
     print(f"Wrote analysis results to {out}")
 
@@ -96,6 +112,8 @@ def _cmd_bench_metrics(args: argparse.Namespace) -> None:
     from .pipeline.metrics import compute_metrics
     metrics = compute_metrics(
         diff_json_path=args.diff_json, judged_json_path=args.judged_json, total_pairs=args.total_pairs,
+        analysis_json_path=args.analysis_json, threshold=args.threshold,
+        dataset_db_path=args.dataset_db,
     )
     print(json.dumps(metrics, indent=2))
     if args.out:
@@ -127,6 +145,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_load.add_argument("--replace", action="store_true")
     p_load.set_defaults(func=_cmd_bench_load)
 
+    p_clean = sub.add_parser("dataset-clean", help="Filter/cap CVEfixes pairs into a clean DuckDB.")
+    p_clean.add_argument("--dataset-db", default=None, help="Existing pairs DuckDB to clean.")
+    p_clean.add_argument("--cvefixes-sqlite", default=None, help="Reload from CVEfixes.db with fixed pair_ids, then clean.")
+    p_clean.add_argument("--out", default="data/cvefixes_clean.duckdb")
+    p_clean.add_argument("--language", default="python")
+    p_clean.add_argument("--max-per-cve", type=int, default=20)
+    p_clean.add_argument("--max-per-repo", type=int, default=40)
+    p_clean.add_argument("--seed", type=int, default=42)
+    p_clean.set_defaults(func=_cmd_dataset_clean)
+
     p_index = sub.add_parser("build-index", help="Build the local CVE similarity index for retrieval-grounded reporting.")
     p_index.add_argument("--dataset-db", required=True)
     p_index.add_argument("--out", default="data/cve_index")
@@ -136,20 +164,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_train = sub.add_parser("train-model", help="Fine-tune the local pairwise (margin-ranking + CE anchor) vulnerability classifier on your loaded dataset (runs on GPU if available).")
     p_train.add_argument("--dataset-db", required=True)
-    p_train.add_argument("--out", required=True, help="e.g. models/vuln-classifier-v16 -- increment each run, per HANDOFF_2 §2.")
+    p_train.add_argument("--out", default="models/vuln-classifier-v21")
     p_train.add_argument("--base-model", default="microsoft/codebert-base")
     p_train.add_argument("--language", default="python")
     p_train.add_argument("--epochs", type=int, default=6)
     p_train.add_argument("--batch-size", type=int, default=8)
     p_train.add_argument("--learning-rate", type=float, default=2e-5)
-    p_train.add_argument("--val-fraction", type=float, default=0.15, help="Fraction of pairs (split by pair_id, not row) held out for validation.")
+    p_train.add_argument("--val-fraction", type=float, default=0.15, help="Fraction of (repo, cve_id) groups held out for validation.")
+    p_train.add_argument("--test-fraction", type=float, default=0.15, help="Fraction of (repo, cve_id) groups held out for test.")
+    p_train.add_argument("--split-dir", default="data/splits")
+    p_train.add_argument("--resplit", action="store_true", help="Ignore existing split files and rewrite them.")
     p_train.add_argument("--margin", type=float, default=1.0)
-    p_train.add_argument("--ce-weight", type=float, default=1.0, help="Weight on the cross-entropy anchor term; don't set to 0 (reproduces the old calibration-drift bug, see HANDOFF_2 §3).")
+    p_train.add_argument("--ce-weight", type=float, default=1.5, help="Weight on the cross-entropy anchor term; don't set to 0.")
     p_train.add_argument("--seed", type=int, default=42)
-    p_train.add_argument("--generic-negatives", default="data/codesearchnet_negatives.jsonl", help="Path from fetch_codesearchnet_negatives.py; subject to train/val split each run.")
-    p_train.add_argument("--generic-negative-ratio", type=float, default=1.0)
-    p_train.add_argument("--curated-negatives", default="data/curated_negatives.jsonl", help="Always trained on, never held out -- see HANDOFF_2 §4.")
-    p_train.add_argument("--curated-pairs", default="data/curated_vulnerable_pairs.jsonl", help="Always trained on, never held out -- see HANDOFF_2 §4.")
+    p_train.add_argument("--generic-negatives", default="data/codesearchnet_negatives.jsonl")
+    p_train.add_argument("--generic-negative-ratio", type=float, default=0.4)
+    p_train.add_argument("--extra-negatives", default="data/clean_library_negatives.jsonl")
+    p_train.add_argument("--hard-negative-ratio", type=float, default=0.25)
+    p_train.add_argument("--curated-negatives", default="data/curated_negatives.jsonl")
+    p_train.add_argument("--curated-pairs", default="data/curated_vulnerable_pairs.jsonl")
+    p_train.add_argument("--no-diff-centered-crop", action="store_true")
+    p_train.add_argument("--filter-truncation-collisions", action="store_true")
     p_train.set_defaults(func=_cmd_train_model)
 
     p_bench_analyze = sub.add_parser("bench-analyze", help="Benchmark phase 1: run the local classifier over every before/after pair in the dataset.")
@@ -158,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench_analyze.add_argument("--language", default="python")
     p_bench_analyze.add_argument("--limit", type=int, default=None)
     p_bench_analyze.add_argument("--max-concurrency", type=int, default=None)
+    p_bench_analyze.add_argument(
+        "--pair-ids", default="data/splits/test_pair_ids.json",
+        help="JSON list of pair_ids to score. Defaults to the held-out test split.",
+    )
+    p_bench_analyze.add_argument("--all-pairs", action="store_true", help="Score the full table (legacy, leaky).")
     p_bench_analyze.set_defaults(func=_cmd_bench_analyze)
 
     p_bench_diff = sub.add_parser("bench-diff", help="Benchmark phase 2: bucket before/after findings into vuln_only/shared/benign_only.")
@@ -180,6 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench_metrics.add_argument("diff_json")
     p_bench_metrics.add_argument("judged_json")
     p_bench_metrics.add_argument("--total-pairs", type=int, required=True)
+    p_bench_metrics.add_argument("--analysis-json", default=None, help="analysis.json with prob_vuln for scan-faithful metrics.")
+    p_bench_metrics.add_argument("--threshold", type=float, default=None)
+    p_bench_metrics.add_argument("--dataset-db", default=None)
     p_bench_metrics.add_argument("--out", default=None)
     p_bench_metrics.set_defaults(func=_cmd_bench_metrics)
 

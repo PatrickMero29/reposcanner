@@ -5,15 +5,20 @@ This is intentionally a separate install extra (`pip install -e ".[embeddings]"`
 since sentence-transformers pulls in torch, which is a large, sometimes fiddly
 install (especially on Windows) — no reason to force it on people who only
 want the plain scanner/benchmark.
+
+numpy is imported lazily so a base install can Semgrep-only scan without
+the embeddings extra.
 """
 
 from __future__ import annotations
 
 import logging
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from ..config import settings
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger("vulnscan.embedding")
 
@@ -39,9 +44,10 @@ def get_encoder():
     return _model
 
 
-def embed_texts(texts: list[str]) -> np.ndarray:
+def embed_texts(texts: list[str]) -> "np.ndarray":
     """Embed a batch of code strings. Returns an (N, D) float32 array,
     L2-normalized so cosine similarity is a plain dot product."""
+    import numpy as np
     if not texts:
         return np.zeros((0, 0), dtype="float32")
     model = get_encoder()

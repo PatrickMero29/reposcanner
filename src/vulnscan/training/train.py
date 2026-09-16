@@ -20,11 +20,24 @@ from __future__ import annotations
 import json
 import logging
 import random
+import subprocess
 from pathlib import Path
 
 from .dataset import Example, PairExample, build_examples, train_val_split
 
 logger = logging.getLogger("vulnscan.training")
+
+GENERIC_RANKING_GATE = 0.97
+AFTER_PROB_PENALTY = 0.05
+
+
+def _git_hash() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, timeout=5,
+        ).strip()
+    except Exception:
+        return None
 
 
 def _filter_truncation_collisions(
@@ -220,17 +233,23 @@ def train_model_pairwise(
     out_dir: str,
     base_model: str = "microsoft/codebert-base",
     language: str = "python",
-    epochs: int = 3,
+    epochs: int = 6,
     batch_size: int = 8,
     learning_rate: float = 2e-5,
     val_fraction: float = 0.15,
+    test_fraction: float = 0.15,
     max_length: int = 512,
     margin: float = 1.0,
-    filter_truncation_collisions: bool = True,
+    filter_truncation_collisions: bool = False,
+    diff_centered_crop: bool = True,
     log_every: int = 10,
     seed: int = 42,
+    split_dir: str | None = "data/splits",
+    resplit: bool = False,
     generic_negatives_path: str | None = None,
-    generic_negative_ratio: float = 1.0,
+    generic_negative_ratio: float = 0.4,
+    extra_negatives_path: str | None = None,
+    hard_negative_ratio: float = 0.25,
     # Hand-curated negatives (see fetch_codesearchnet_negatives.py's
     # _TRIVIAL_SAFE_EXAMPLES + _SAFE_IO_EXAMPLES). Unlike generic_negatives_path,
     # these are ALWAYS added to training and NEVER held out. Merging them into
@@ -252,7 +271,7 @@ def train_model_pairwise(
     # Weight on the absolute cross-entropy anchor term (see docstring below).
     # 0.0 reproduces the pure-ranking v5/v6 behavior; don't set it to 0 unless
     # you specifically want to reproduce that calibration-drift failure mode.
-    ce_weight: float = 1.0,
+    ce_weight: float = 1.5,
     # DataLoader workers for the (now-cheap) collate step. Default 0 is safest
     # on Windows -- if you raise this, the script calling train_model_pairwise
     # must be guarded with `if __name__ == "__main__":`, since Windows uses
@@ -274,17 +293,8 @@ def train_model_pairwise(
     # discrimination) and held-out generic ranking_accuracy (does this
     # generalize to arbitrary code) -- the two things that matter and can
     # trade off against each other, per the v9/v10 regression discussion.
-    best_epoch_metric: str = "composite",
-    # v11 picked epoch 2 (composite=0.8569) over epoch 5 (composite=0.8550)
-    # -- a 0.0019 difference on a 756-example held-out set, i.e. ~3 examples
-    # flipping either way. That's noise, not signal, and epoch 2 was
-    # meaningfully less converged (train_loss 1.51 vs epoch 5's 0.87). A
-    # later epoch within `best_epoch_tolerance` of the current best score
-    # is now preferred over an earlier one, since more training exposure is
-    # independent evidence it's more converged even when these two coarse
-    # held-out metrics can't tell them apart. Only a genuinely larger score
-    # improvement moves the "best" epoch backward in time.
-    best_epoch_tolerance: float = 0.01,
+    best_epoch_metric: str = "scan_detection",
+    best_epoch_tolerance: float = 0.0,
 ) -> str:
     """Trains the classifier with a pairwise margin-ranking objective PLUS an
     absolute cross-entropy anchor, instead of train_model()'s independent
@@ -347,7 +357,15 @@ def train_model_pairwise(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    from .dataset import build_pairs, load_generic_negatives, train_val_split_pairs
+    from .dataset import build_pairs, load_generic_negatives
+    from .splits import (
+        apply_split_ids,
+        pair_ids as _pair_ids,
+        save_splits,
+        splits_exist,
+        load_splits_dir,
+        train_val_test_split_grouped,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
 
@@ -358,25 +376,83 @@ def train_model_pairwise(
             "Load a dataset first with `vulnscan bench-load`."
         )
 
-    if filter_truncation_collisions:
-        kept, dropped = [], 0
-        for p in pairs:
-            before_ids = tokenizer(p.before_code, truncation=True, max_length=max_length)["input_ids"]
-            after_ids = tokenizer(p.after_code, truncation=True, max_length=max_length)["input_ids"]
-            if before_ids == after_ids:
-                dropped += 1
-                continue
-            kept.append(p)
-        if dropped:
+    if split_dir and splits_exist(split_dir) and not resplit:
+        logger.info("Reusing persisted splits from %s", split_dir)
+        split_ids = load_splits_dir(split_dir)
+        train_pairs = apply_split_ids(pairs, split_ids["train"])
+        val_pairs = apply_split_ids(pairs, split_ids["val"])
+        test_pairs = apply_split_ids(pairs, split_ids["test"])
+    else:
+        train_frac = max(0.0, 1.0 - val_fraction - test_fraction)
+        train_pairs, val_pairs, test_pairs = train_val_test_split_grouped(
+            pairs, train_fraction=train_frac, val_fraction=val_fraction, seed=seed,
+        )
+        if split_dir:
+            save_splits(split_dir, _pair_ids(train_pairs), _pair_ids(val_pairs), _pair_ids(test_pairs))
             logger.info(
-                "Filtered out %d/%d pairs that collapse to an identical input after "
-                "%d-token truncation.", dropped, len(pairs), max_length,
+                "Wrote grouped (repo, cve_id) splits to %s (train=%d val=%d test=%d pairs)",
+                split_dir, len(train_pairs), len(val_pairs), len(test_pairs),
             )
-        pairs = kept
-        if not pairs:
-            raise ValueError("All pairs were filtered out as truncation collisions.")
 
-    train_pairs, val_pairs = train_val_split_pairs(pairs, val_fraction=val_fraction, seed=seed)
+    def _crop_list(ps: list[PairExample]) -> list[PairExample]:
+        from .windows import crop_pair_texts
+        out: list[PairExample] = []
+        for p in ps:
+            b, a = crop_pair_texts(p.before_code, p.after_code, tokenizer, max_length=max_length)
+            out.append(PairExample(
+                pair_id=p.pair_id, before_code=b, after_code=a,
+                cve_id=p.cve_id, cwe_ids=p.cwe_ids, repo=p.repo,
+                file_path=p.file_path, function_name=p.function_name,
+            ))
+        return out
+
+    if diff_centered_crop:
+        logger.info("Applying diff-centered %d-token crop to train/val pairs.", max_length)
+        train_pairs = _crop_list(train_pairs)
+        val_pairs = _crop_list(val_pairs)
+
+    if filter_truncation_collisions:
+        def _drop_collisions(ps: list[PairExample]) -> list[PairExample]:
+            kept, dropped = [], 0
+            for p in ps:
+                before_ids = tokenizer(p.before_code, truncation=True, max_length=max_length)["input_ids"]
+                after_ids = tokenizer(p.after_code, truncation=True, max_length=max_length)["input_ids"]
+                if before_ids == after_ids:
+                    dropped += 1
+                    continue
+                kept.append(p)
+            if dropped:
+                logger.info(
+                    "Filtered out %d/%d pairs that collapse to an identical input after "
+                    "%d-token truncation.", dropped, dropped + len(kept), max_length,
+                )
+            return kept
+        train_pairs = _drop_collisions(train_pairs)
+        val_pairs = _drop_collisions(val_pairs)
+        if not train_pairs:
+            raise ValueError("All train pairs were filtered out as truncation collisions.")
+
+    cve_train_pairs = list(train_pairs)
+    rng = random.Random(seed)
+
+    if hard_negative_ratio > 0 and cve_train_pairs:
+        after_pool = [p.after_code for p in cve_train_pairs]
+        n_hard = round(hard_negative_ratio * len(cve_train_pairs))
+        hard: list[PairExample] = []
+        for i in range(n_hard):
+            src = rng.choice(cve_train_pairs)
+            other = rng.choice(after_pool)
+            tries = 0
+            while other == src.after_code and len(after_pool) > 1 and tries < 8:
+                other = rng.choice(after_pool)
+                tries += 1
+            hard.append(PairExample(
+                pair_id=f"hardneg:{i}",
+                before_code=src.before_code,
+                after_code=other,
+            ))
+        logger.info("Adding %d hard negatives (vuln vs other-CVE fixed).", len(hard))
+        train_pairs = train_pairs + hard
 
     val_generic_pairs: list[PairExample] = []
     if generic_negatives_path:
@@ -433,9 +509,26 @@ def train_model_pairwise(
                 for i, neg in enumerate(val_negatives)
             ]
 
+    if extra_negatives_path and Path(extra_negatives_path).exists():
+        extra_negatives = load_generic_negatives(extra_negatives_path, strip_sinks=True)
+        if extra_negatives:
+            extra_synth = [
+                PairExample(
+                    pair_id=f"extra_negative:{i}",
+                    before_code=rng.choice([p.before_code for p in cve_train_pairs] or [""]),
+                    after_code=neg,
+                )
+                for i, neg in enumerate(extra_negatives)
+            ]
+            logger.info(
+                "Adding %d extra library negatives from %s to training (never held out).",
+                len(extra_negatives), extra_negatives_path,
+            )
+            train_pairs = train_pairs + extra_synth
+
     if curated_negatives_path:
         from .dataset import load_generic_negatives as _load_curated  # same jsonl shape
-        curated_negatives = _load_curated(curated_negatives_path)
+        curated_negatives = _load_curated(curated_negatives_path, strip_sinks=False)
         if not curated_negatives:
             raise ValueError(f"No curated negatives loaded from {curated_negatives_path!r}.")
         rng2 = random.Random(seed)
@@ -466,8 +559,9 @@ def train_model_pairwise(
         train_pairs = train_pairs + curated_pairs
 
     logger.info(
-        "Training on %d pairs, validating on %d CVE pairs + %d generic-negative pairs.",
-        len(train_pairs), len(val_pairs), len(val_generic_pairs),
+        "Training on %d pairs, validating on %d CVE pairs + %d generic-negative pairs "
+        "(test holdout %d pairs, not used during training).",
+        len(train_pairs), len(val_pairs), len(val_generic_pairs), len(test_pairs),
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -570,9 +664,11 @@ def train_model_pairwise(
         return loss, rank_loss, ce_loss, before_score, after_score
 
     def _run_eval(loader) -> dict:
+        from ..pipeline.scan_metrics import pick_threshold, pr_curve
         model.eval()
         total_loss, correct, total = 0.0, 0, 0
-        before_probs, after_probs = [], []
+        batch_before_means, batch_after_means = [], []
+        all_before, all_after = [], []
         with torch.no_grad():
             for padded, b in loader:
                 padded = {k: v.to(device, non_blocking=True) for k, v in padded.items()}
@@ -584,44 +680,68 @@ def train_model_pairwise(
                 total_loss += loss.item()
                 correct += (before_score > after_score).sum().item()
                 total += before_score.numel()
-                # Calibration diagnostic: mean P(vulnerable) in the absolute
-                # sense, not just relative ranking -- this is exactly what
-                # caught the v6 drift (both landing near 1.0 regardless of
-                # which side of the pair they were).
-                before_probs.append(torch.softmax(before_logits, dim=-1)[:, 1].mean().item())
-                after_probs.append(torch.softmax(after_logits, dim=-1)[:, 1].mean().item())
+                before_p = torch.softmax(before_logits, dim=-1)[:, 1].detach().float().cpu()
+                after_p = torch.softmax(after_logits, dim=-1)[:, 1].detach().float().cpu()
+                batch_before_means.append(before_p.mean().item())
+                batch_after_means.append(after_p.mean().item())
+                all_before.extend(before_p.tolist())
+                all_after.extend(after_p.tolist())
         model.train()
         n_batches = max(1, len(loader))
+        t, scan_m = pick_threshold(all_before, all_after)
         return {
             "loss": total_loss / n_batches,
             "ranking_accuracy": correct / total if total else 0.0,
-            "avg_before_prob_vuln": sum(before_probs) / n_batches,
-            "avg_after_prob_vuln": sum(after_probs) / n_batches,
+            "avg_before_prob_vuln": sum(batch_before_means) / n_batches,
+            "avg_after_prob_vuln": sum(batch_after_means) / n_batches,
+            "scan_detection": scan_m["detection"],
+            "scan_noise": scan_m["noise"],
+            "scan_threshold": t,
+            "pr_curve": [
+                {**row, "detection": round(row["detection"], 4), "noise": round(row["noise"], 4)}
+                for row in pr_curve(all_before, all_after)
+            ],
         }
 
-    def _composite_score(epoch_metrics: dict) -> float:
-        cve_acc = epoch_metrics.get("val_ranking_accuracy")
+    def _selection_score(epoch_metrics: dict) -> float:
         generic_acc = epoch_metrics.get("held_out_generic_ranking_accuracy")
+        if generic_acc is not None and generic_acc < GENERIC_RANKING_GATE:
+            return float("-inf")
         if best_epoch_metric == "val_ranking_accuracy":
-            return cve_acc if cve_acc is not None else float("-inf")
+            v = epoch_metrics.get("val_ranking_accuracy")
+            return v if v is not None else float("-inf")
         if best_epoch_metric == "generic_ranking_accuracy":
             return generic_acc if generic_acc is not None else float("-inf")
         if best_epoch_metric == "composite":
+            cve_acc = epoch_metrics.get("val_ranking_accuracy")
             vals = [v for v in (cve_acc, generic_acc) if v is not None]
             return sum(vals) / len(vals) if vals else float("-inf")
-        raise ValueError(
-            f"Unknown best_epoch_metric={best_epoch_metric!r}, expected one of "
-            "'composite', 'val_ranking_accuracy', 'generic_ranking_accuracy'."
-        )
+        det = epoch_metrics.get("val_scan_detection")
+        if det is None:
+            v = epoch_metrics.get("val_ranking_accuracy")
+            return v if v is not None else float("-inf")
+        after_p = epoch_metrics.get("val_avg_after_prob_vuln") or 0.0
+        return det - AFTER_PROB_PENALTY * after_p
+
+    def _save_checkpoint(*, threshold: float | None) -> None:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(out_dir)
+        tokenizer.save_pretrained(out_dir)
+        if threshold is not None:
+            (Path(out_dir) / "threshold.json").write_text(
+                json.dumps({"threshold": threshold}, indent=2), encoding="utf-8",
+            )
 
     step = 0
     history: list[dict] = []
     best_score = float("-inf")
     best_epoch = None
+    best_threshold: float | None = None
+    n_loader = max(1, len(train_loader))
     for epoch in range(epochs):
         model.train()
         epoch_losses = []
-        for padded, b in train_loader:
+        for batch_idx, (padded, b) in enumerate(train_loader):
             padded = {k: v.to(device, non_blocking=True) for k, v in padded.items()}
 
             optimizer.zero_grad(set_to_none=True)
@@ -637,26 +757,34 @@ def train_model_pairwise(
             epoch_losses.append(loss.item())
             step += 1
             if step % log_every == 0:
+                epoch_frac = epoch + (batch_idx + 1) / n_loader
                 logger.info(
                     "step %d (epoch %.3f) loss=%.4f (rank=%.4f, ce=%.4f) lr=%.3e",
-                    step, epoch + (step % len(train_loader)) / len(train_loader),
+                    step, epoch_frac,
                     loss.item(), rank_loss.item(), ce_loss.item(), scheduler.get_last_lr()[0],
                 )
 
         train_loss = sum(epoch_losses) / len(epoch_losses)
         epoch_metrics: dict = {"epoch": epoch + 1, "train_loss": train_loss}
         summary = f"Epoch {epoch + 1}/{epochs}: train_loss={train_loss:.4f}"
+        epoch_threshold = None
         if val_loader:
             m = _run_eval(val_loader)
+            epoch_threshold = m["scan_threshold"]
             epoch_metrics.update({
                 "val_loss": m["loss"],
                 "val_ranking_accuracy": m["ranking_accuracy"],
                 "val_avg_before_prob_vuln": m["avg_before_prob_vuln"],
                 "val_avg_after_prob_vuln": m["avg_after_prob_vuln"],
+                "val_scan_detection": m["scan_detection"],
+                "val_scan_noise": m["scan_noise"],
+                "val_scan_threshold": m["scan_threshold"],
+                "val_pr_curve": m["pr_curve"],
             })
             summary += (
                 f", val_loss={m['loss']:.4f}, val_ranking_accuracy={m['ranking_accuracy']:.4f}, "
-                f"val_avg_prob_vuln(before/after)={m['avg_before_prob_vuln']:.3f}/{m['avg_after_prob_vuln']:.3f}"
+                f"val_avg_prob_vuln(before/after)={m['avg_before_prob_vuln']:.3f}/{m['avg_after_prob_vuln']:.3f}, "
+                f"scan_detection={m['scan_detection']:.4f} noise={m['scan_noise']:.4f} t={m['scan_threshold']:.2f}"
             )
         if val_generic_loader:
             g = _run_eval(val_generic_loader)
@@ -665,56 +793,68 @@ def train_model_pairwise(
                 "held_out_generic_avg_before_prob_vuln": g["avg_before_prob_vuln"],
                 "held_out_generic_avg_after_prob_vuln": g["avg_after_prob_vuln"],
             })
-            # This is the number that answers "does this generalize to
-            # arbitrary unrelated code" -- neither before/after here has ever
-            # been seen in training. before = held-out real vulnerable code,
-            # after = held-out generic negative (never-trained-on
-            # CodeSearchNet function). Want after_prob_vuln low and
-            # ranking_accuracy high; sanity_check.py's cases are a spot check
-            # on this, not a substitute for it.
             summary += (
                 f" | held-out generic: ranking_accuracy={g['ranking_accuracy']:.4f}, "
                 f"avg_prob_vuln(vuln/generic_negative)={g['avg_before_prob_vuln']:.3f}/{g['avg_after_prob_vuln']:.3f}"
             )
 
-        score = _composite_score(epoch_metrics)
+        score = _selection_score(epoch_metrics)
         epoch_metrics["selection_score"] = score
-        # A later epoch wins if it's strictly better, OR if it's within
-        # tolerance of the best-so-far -- since it's later, it's had strictly
-        # more training and that's independent evidence of being at least as
-        # converged, even when these two coarse held-out numbers can't
-        # distinguish them. Only a real (>tolerance) drop keeps the earlier
-        # epoch's checkpoint in place.
-        is_best = score > best_score - best_epoch_tolerance
+        is_best = score > best_score
         if is_best:
-            improved = score > best_score
-            best_score = max(score, best_score)
+            best_score = score
             best_epoch = epoch + 1
-            model.save_pretrained(out_dir)
-            tokenizer.save_pretrained(out_dir)
-            tag = "NEW BEST" if improved else "KEPT (within tolerance of best, later epoch preferred)"
-            summary += f" -> {tag} (score={score:.4f}, best={best_score:.4f}), saved to {out_dir}"
+            best_threshold = epoch_threshold
+            _save_checkpoint(threshold=best_threshold)
+            summary += f" -> NEW BEST (score={score:.4f}), saved to {out_dir}"
         history.append(epoch_metrics)
         logger.info(summary)
 
     if best_epoch is None:
-        # No val data to score against (val_loader/val_generic_loader both
-        # empty) -- fall back to saving whatever the last epoch produced,
-        # same behavior as before this change.
-        model.save_pretrained(out_dir)
-        tokenizer.save_pretrained(out_dir)
+        _save_checkpoint(threshold=best_threshold)
         best_epoch = epochs
         logger.info("No validation data available to pick a best epoch -- saved final epoch instead.")
+
+    if split_dir and splits_exist(split_dir):
+        dest = Path(out_dir) / "splits"
+        dest.mkdir(parents=True, exist_ok=True)
+        for name in ("train", "val", "test"):
+            src = Path(split_dir) / f"{name}_pair_ids.json"
+            if src.exists():
+                (dest / src.name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    run_meta = {
+        "seed": seed,
+        "git_hash": _git_hash(),
+        "threshold": best_threshold,
+        "ce_weight": ce_weight,
+        "generic_negative_ratio": generic_negative_ratio,
+        "hard_negative_ratio": hard_negative_ratio,
+        "split_dir": split_dir,
+        "base_model": base_model,
+        "best_epoch": best_epoch,
+        "best_epoch_metric": best_epoch_metric,
+        "dataset_db_path": dataset_db_path,
+        "diff_centered_crop": diff_centered_crop,
+        "filter_truncation_collisions": filter_truncation_collisions,
+    }
+    (Path(out_dir) / "run_meta.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     history_path = Path(out_dir) / "training_history.json"
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(
-            {"best_epoch": best_epoch, "best_epoch_metric": best_epoch_metric, "epochs": history},
+            {
+                "best_epoch": best_epoch,
+                "best_epoch_metric": best_epoch_metric,
+                "best_threshold": best_threshold,
+                "best_score": best_score,
+                "epochs": history,
+            },
             f, indent=2,
         )
     logger.info(
-        "Training complete. Best epoch: %d/%d (by %s, score=%.4f). "
+        "Training complete. Best epoch: %d/%d (by %s, score=%.4f, threshold=%s). "
         "Full per-epoch history: %s",
-        best_epoch, epochs, best_epoch_metric, best_score, history_path,
+        best_epoch, epochs, best_epoch_metric, best_score, best_threshold, history_path,
     )
     return out_dir

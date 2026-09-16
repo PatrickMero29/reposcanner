@@ -26,7 +26,7 @@ import logging
 from .config import settings
 from .embedding.index import IndexEntry
 from .embedding.retrieve import retrieve_similar_cves
-from .local_model.inference import predict as local_model_predict
+from .local_model.inference import predict_detailed
 from .rules.semgrep_runner import SemgrepFinding
 from .schemas import ClosestCVEMatch, Finding, Language
 
@@ -53,27 +53,15 @@ def _format_static_context(findings: list[SemgrepFinding] | None) -> str | None:
     return "\n".join(lines)
 
 
-async def analyze(
+def enrich_findings(
+    findings: list[Finding],
     *,
     code: str,
-    function_name: str,
-    language: Language,
     static_findings: list[SemgrepFinding] | None = None,
     pair_id: str | None = None,
 ) -> list[Finding]:
-    """Run the local classifier on one function, then enrich any positive
-    finding with CVE-retrieval and Semgrep context for a human reviewer.
-    Never raises — see local_model/inference.py for the degradation story.
-
-    pair_id: only set by run_analysis.py (the benchmark), which knows which
-    dataset row it's analyzing and needs to exclude that row from its own
-    retrieval results — see retrieve_similar_cves' docstring. Real scans
-    leave this None.
-    """
-    findings = await local_model_predict(code=code, function_name=function_name, language=language)
     if not findings:
         return findings
-
     extra_parts: list[str] = []
     if settings.enable_retrieval:
         matches = retrieve_similar_cves(code, exclude_pair_id=pair_id)
@@ -81,21 +69,7 @@ async def analyze(
         if cve_text:
             extra_parts.append(cve_text)
         if matches:
-            # Same top match already described in prose above -- also kept
-            # structured so reports can render it as an explicit combined
-            # confidence+similarity signal (architecture.txt Phase 6)
-            # instead of a reader having to parse it back out of text.
             top_entry, top_score = matches[0]
-            # Cosine similarity is mathematically bounded to [0, 1] here (the
-            # embeddings are normalized, non-negative-similarity is what
-            # this index expects), but float32 dot-product/normalization
-            # arithmetic can round a should-be-exactly-1.0 value (e.g. the
-            # index containing this exact function, or a near-duplicate --
-            # which happens constantly during bench-analyze specifically
-            # *because* the index is built from the same dataset being
-            # benchmarked) to something like 1.0000001192092896. Clamp here
-            # rather than loosen ClosestCVEMatch's schema bound, since a
-            # genuinely out-of-range value would still be worth catching.
             clamped_score = max(0.0, min(1.0, top_score))
             for finding in findings:
                 finding.undesired_operation.closest_cve_match = ClosestCVEMatch(
@@ -106,10 +80,76 @@ async def analyze(
     static_text = _format_static_context(static_findings)
     if static_text:
         extra_parts.append(static_text)
-
     if extra_parts:
         addendum = "\n\n" + "\n\n".join(extra_parts)
         for finding in findings:
             finding.undesired_operation.description += addendum
-
     return findings
+
+
+async def analyze(
+    *,
+    code: str,
+    function_name: str,
+    language: Language,
+    static_findings: list[SemgrepFinding] | None = None,
+    pair_id: str | None = None,
+    chunk_start_line: int = 1,
+    confidence_threshold: float | None = None,
+    fail_open: bool = False,
+) -> list[Finding]:
+    """Run the local classifier on one function, then enrich any positive
+    finding with CVE-retrieval and Semgrep context for a human reviewer.
+    Never raises — see local_model/inference.py for the degradation story.
+
+    pair_id: only set by run_analysis.py (the benchmark), which knows which
+    dataset row it's analyzing and needs to exclude that row from its own
+    retrieval results — see retrieve_similar_cves' docstring. Real scans
+    leave this None.
+    """
+    center_lines = None
+    if static_findings:
+        center_lines = [
+            max(1, f.start_line - chunk_start_line + 1) for f in static_findings
+        ]
+    result = predict_detailed(
+        code=code,
+        function_name=function_name,
+        language=language,
+        confidence_threshold=confidence_threshold,
+        center_lines=center_lines,
+        fail_open=fail_open,
+    )
+    return enrich_findings(
+        result.findings, code=code, static_findings=static_findings, pair_id=pair_id,
+    )
+
+
+async def analyze_scored(
+    *,
+    code: str,
+    function_name: str,
+    language: Language,
+    static_findings: list[SemgrepFinding] | None = None,
+    pair_id: str | None = None,
+    chunk_start_line: int = 1,
+    confidence_threshold: float | None = None,
+    fail_open: bool = False,
+) -> tuple[list[Finding], float, int]:
+    center_lines = None
+    if static_findings:
+        center_lines = [
+            max(1, f.start_line - chunk_start_line + 1) for f in static_findings
+        ]
+    result = predict_detailed(
+        code=code,
+        function_name=function_name,
+        language=language,
+        confidence_threshold=confidence_threshold,
+        center_lines=center_lines,
+        fail_open=fail_open,
+    )
+    findings = enrich_findings(
+        result.findings, code=code, static_findings=static_findings, pair_id=pair_id,
+    )
+    return findings, result.prob_vuln, result.n_tokens

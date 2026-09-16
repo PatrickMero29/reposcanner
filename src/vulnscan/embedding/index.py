@@ -13,9 +13,10 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger("vulnscan.embedding.index")
 
@@ -40,13 +41,14 @@ class IndexEntry:
 
 
 class VectorIndex:
-    def __init__(self, embeddings: np.ndarray, entries: list[IndexEntry]):
+    def __init__(self, embeddings: Any, entries: list[IndexEntry]):
         assert embeddings.shape[0] == len(entries), "embeddings/entries length mismatch"
         self.embeddings = embeddings
         self.entries = entries
 
     @classmethod
-    def build(cls, pairs: list[dict], embed_fn: Callable[[list[str]], np.ndarray]) -> "VectorIndex":
+    def build(cls, pairs: list[dict], embed_fn: Callable[[list[str]], Any]) -> "VectorIndex":
+        import numpy as np
         if not pairs:
             return cls(np.zeros((0, 0), dtype="float32"), [])
         texts = [p["func_before"][:MAX_SNIPPET_CHARS] for p in pairs]
@@ -67,6 +69,7 @@ class VectorIndex:
         return cls(embeddings, entries)
 
     def save(self, directory: str) -> None:
+        import numpy as np
         out_dir = Path(directory)
         out_dir.mkdir(parents=True, exist_ok=True)
         np.save(out_dir / EMBEDDINGS_FILENAME, self.embeddings)
@@ -77,6 +80,7 @@ class VectorIndex:
 
     @classmethod
     def load(cls, directory: str) -> "VectorIndex":
+        import numpy as np
         in_dir = Path(directory)
         embeddings = np.load(in_dir / EMBEDDINGS_FILENAME)
         entries = []
@@ -87,9 +91,10 @@ class VectorIndex:
                     entries.append(IndexEntry(**json.loads(line)))
         return cls(embeddings, entries)
 
-    def search(self, query_embedding: np.ndarray, top_k: int = 5) -> list[tuple[IndexEntry, float]]:
+    def search(self, query_embedding: Any, top_k: int = 5) -> list[tuple[IndexEntry, float]]:
         """query_embedding: a single L2-normalized (D,) vector. Returns
         [(entry, cosine_similarity), ...] sorted descending, best match first."""
+        import numpy as np
         if self.embeddings.shape[0] == 0:
             return []
         scores = self.embeddings @ query_embedding  # cosine sim, since both sides are L2-normalized
