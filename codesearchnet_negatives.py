@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 
 from datasets import load_dataset
 
@@ -43,6 +44,12 @@ TARGET_COUNT = 5000
 MIN_CHARS = 10
 MAX_CHARS = 4000     # skip huge files that would dominate tokenization anyway
 SEED = 42
+_SINK_RE = re.compile(
+    r"(?:os\.system|os\.popen|subprocess\.|pickle\.loads?|yaml\.load|"
+    r"\beval\s*\(|\bexec\s*\(|urlopen\s*\(|\bopen\s*\(|"
+    r"redirect\s*\(|\.execute\s*\(|shell\s*=\s*True)",
+    re.IGNORECASE,
+)
 
 # Hand-curated, genuinely trivial, unambiguously-safe functions -- guarantees
 # coverage of the very-short regime regardless of how many short examples
@@ -356,6 +363,8 @@ def main() -> None:
     for i in indices:
         code = ds[i][field]
         if not code or not (MIN_CHARS <= len(code) <= MAX_CHARS):
+            continue
+        if _SINK_RE.search(code):
             continue
         kept.append(code)
         if len(kept) >= TARGET_COUNT:
