@@ -47,6 +47,19 @@ def _cmd_build_index(args: argparse.Namespace) -> None:
     print(f"Index built at {out}")
 
 
+def _cmd_write_splits(args: argparse.Namespace) -> None:
+    from .training.splits import write_splits_from_db
+    summary = write_splits_from_db(
+        args.dataset_db,
+        args.out,
+        language=args.language,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        seed=args.seed,
+    )
+    print(json.dumps(summary, indent=2))
+
+
 def _cmd_dataset_clean(args: argparse.Namespace) -> None:
     from .dataset.clean import clean_dataset
     summary = clean_dataset(
@@ -154,6 +167,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_clean.add_argument("--max-per-repo", type=int, default=40)
     p_clean.add_argument("--seed", type=int, default=42)
     p_clean.set_defaults(func=_cmd_dataset_clean)
+
+    p_splits = sub.add_parser(
+        "write-splits",
+        help="Persist grouped (repo, cve_id) train/val/test pair_ids without training.",
+    )
+    p_splits.add_argument("--dataset-db", required=True)
+    p_splits.add_argument("--out", default="data/splits")
+    p_splits.add_argument("--language", default="python")
+    p_splits.add_argument("--val-fraction", type=float, default=0.15)
+    p_splits.add_argument("--test-fraction", type=float, default=0.15)
+    p_splits.add_argument("--seed", type=int, default=42)
+    p_splits.set_defaults(func=_cmd_write_splits)
 
     p_index = sub.add_parser("build-index", help="Build the local CVE similarity index for retrieval-grounded reporting.")
     p_index.add_argument("--dataset-db", required=True)

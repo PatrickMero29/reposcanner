@@ -104,3 +104,32 @@ def apply_split_ids(
 ) -> list[PairExample]:
     wanted = set(ids)
     return [p for p in pairs if p.pair_id in wanted]
+
+
+def write_splits_from_db(
+    dataset_db_path: str,
+    split_dir: str | Path,
+    *,
+    language: str = "python",
+    val_fraction: float = 0.15,
+    test_fraction: float = 0.15,
+    seed: int = 42,
+) -> dict:
+    from .dataset import build_pairs
+
+    pairs = build_pairs(dataset_db_path, language=language)
+    if not pairs:
+        raise ValueError(f"No pairs in {dataset_db_path} for language={language!r}")
+    train_frac = max(0.0, 1.0 - val_fraction - test_fraction)
+    train, val, test = train_val_test_split_grouped(
+        pairs, train_fraction=train_frac, val_fraction=val_fraction, seed=seed,
+    )
+    dest = save_splits(split_dir, pair_ids(train), pair_ids(val), pair_ids(test))
+    train_groups = {group_key(p) for p in train}
+    val_groups = {group_key(p) for p in val}
+    test_groups = {group_key(p) for p in test}
+    return {
+        "split_dir": str(dest),
+        "n_pairs": {"train": len(train), "val": len(val), "test": len(test)},
+        "n_groups": {"train": len(train_groups), "val": len(val_groups), "test": len(test_groups)},
+    }

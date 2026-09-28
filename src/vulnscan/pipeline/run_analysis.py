@@ -73,8 +73,8 @@ async def run_analysis(
         path = Path(pair_ids_path)
         if not path.exists():
             raise FileNotFoundError(
-                f"pair-ids file not found: {pair_ids_path}. Run train-model first "
-                "(writes data/splits/test_pair_ids.json) or pass --all-pairs."
+                f"pair-ids file not found: {pair_ids_path}. Run `vulnscan write-splits` "
+                "or train-model first, or pass --all-pairs."
             )
         pair_ids = load_split_ids(path)
         logger.info("Restricting bench-analyze to %d pair_ids from %s", len(pair_ids), pair_ids_path)

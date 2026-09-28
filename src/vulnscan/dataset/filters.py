@@ -80,6 +80,29 @@ def is_parseable_function(code: str) -> bool:
     return False
 
 
+def strip_sinks_from_jsonl(path: str) -> dict[str, int]:
+    """Rewrite a {\"code\": ...} jsonl file, dropping snippets that contain sinks."""
+    import json
+    from pathlib import Path
+
+    src = Path(path)
+    kept: list[str] = []
+    n_in = n_sink = 0
+    with src.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            n_in += 1
+            obj = json.loads(line)
+            code = obj.get("code") or ""
+            if contains_sink(code):
+                n_sink += 1
+                continue
+            kept.append(json.dumps({"code": code}, ensure_ascii=False))
+    src.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    return {"input": n_in, "dropped_sinks": n_sink, "kept": len(kept)}
+
+
 def meets_min_size(code: str, *, min_lines: int = MIN_NONEMPTY_LINES, min_tokens: int = MIN_TOKENS) -> bool:
     nonempty = [ln for ln in (code or "").splitlines() if ln.strip()]
     tokens = (code or "").split()

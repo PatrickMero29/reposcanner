@@ -23,9 +23,11 @@ CVE-retrieval enrichment (local sentence-embedding index — reference only, not
 Report: static_findings (Semgrep) + ai_findings (classifier), reported separately
 ```
 
-Every stage fails **open**: if Semgrep isn't installed, everything goes to the classifier
-instead of being silently dropped. If no classifier has been trained yet, `vulnscan scan` still
-returns Semgrep's findings. If the embeddings extra isn't installed, retrieval quietly no-ops.
+If Semgrep isn't installed, times out, or exits nonzero, the scan fails **open** (every
+function goes to the classifier, at a higher confidence bar). If Semgrep ran clean with
+zero findings, the classifier is **not** run on the whole repo. If no classifier has been
+trained yet, `vulnscan scan` still returns Semgrep's findings. If the embeddings extra
+isn't installed, retrieval quietly no-ops.
 
 Currently supports **Python only**. Adding a language means writing one new chunker (see
 "Adding a language" below) — nothing else in the pipeline changes.
@@ -78,9 +80,11 @@ alongside `p/security-audit` if the file exists.
 ## Training your own classifier
 
 ```bash
-vulnscan bench-load --csv my_pairs.csv --dataset-db data/cvefixes.duckdb
-pip install -e ".[ml]"   # torch + transformers + scikit-learn + accelerate — GPU used automatically if available
-vulnscan train-model --dataset-db data/cvefixes.duckdb --out models/vuln-classifier
+vulnscan dataset-clean --cvefixes-sqlite CVEfixes_meta.db --out data/cvefixes_clean.duckdb
+vulnscan write-splits --dataset-db data/cvefixes_clean.duckdb
+vulnscan build-index --dataset-db data/cvefixes_clean.duckdb --out data/cve_index
+pip install -e ".[ml]"
+vulnscan train-model --dataset-db data/cvefixes_clean.duckdb --out models/vuln-classifier-v21
 ```
 
 `train-model` runs `train_model_pairwise` — a pairwise margin-ranking objective with a
@@ -90,8 +94,10 @@ classification. That's a deliberate choice: the earlier independent-classificati
 
 A few things the trainer handles that are easy to get wrong with this kind of data:
 
-- **Splits by `pair_id`, not by row**, so a function's vulnerable and fixed versions never land
-  on opposite sides of train/val — a common source of inflated benchmark numbers.
+- **Splits by `(repo, cve_id)`**, so every pair from one advisory/repo stays on one side of
+  train/val/test (~70/15/15 by CVE, not by row). Splitting only by `pair_id` still leaks.
+  `vulnscan write-splits` persists `data/splits/{train,val,test}_pair_ids.json`;
+  `bench-analyze` defaults to the test file.
 - **Filters truncation collisions**: if a before/after pair's differing lines fall past
   `max_length` after tokenization, both versions collapse to an identical input with opposite
   labels — directly contradictory training data. This affects roughly 12% of a real CVEfixes
@@ -132,8 +138,9 @@ vulnscan bench-metrics data/experiments/1/diff.json data/experiments/1/judged.js
    itself never emits structured CWE IDs) and compares them against CVEfixes' own CWE labels —
    which are themselves incomplete (~19% of pairs use NVD's "no info" placeholders rather than a
    real CWE, handled explicitly rather than treated as a false mismatch).
-4. **bench-metrics** — rolls diff + judged results up into detection rate, noise rate, and
-   CWE-attribution numbers.
+4. **bench-metrics** — rolls diff + judged results up into scan-faithful detection/noise
+   (pass `--analysis-json` with `prob_vuln`) plus a retrieval-only CWE diagnostic.
+   CWE F1 is not a classifier score.
 
 **Bring your own CSV** (recommended — no dependency on one dataset's internal schema). Columns:
 `pair_id, cve_id, cwe_ids, language, repo, file_path, function_name, func_before, func_after,

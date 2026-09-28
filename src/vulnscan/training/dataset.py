@@ -21,7 +21,7 @@ import random
 from dataclasses import dataclass, field
 
 from ..dataset.cvefixes_loader import get_pairs
-from ..dataset.filters import contains_sink
+from ..dataset.filters import contains_sink, is_test_function, is_test_path
 
 
 @dataclass
@@ -86,6 +86,8 @@ def build_pairs(dataset_db_path: str, *, language: str = "python") -> list[PairE
         if not before or not after:
             continue
         if before == after:
+            continue
+        if is_test_path(p.get("file_path")) or is_test_function(p.get("function_name")):
             continue
         out.append(PairExample(
             pair_id=p["pair_id"],

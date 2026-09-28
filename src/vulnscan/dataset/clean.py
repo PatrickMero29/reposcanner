@@ -17,7 +17,6 @@ from .filters import (
     is_parseable_function,
     is_test_function,
     is_test_path,
-    meets_min_size,
 )
 
 logger = logging.getLogger("vulnscan.dataset.clean")
@@ -55,9 +54,6 @@ def filter_pairs(pairs: list[dict]) -> tuple[list[dict], dict[str, int]]:
             continue
         if not is_parseable_function(before_d) or not is_parseable_function(after_d):
             stats["unparseable"] += 1
-            continue
-        if not meets_min_size(before_d) and not meets_min_size(after_d):
-            stats["too_small"] += 1
             continue
         if is_test_path(p.get("file_path")) or is_test_function(p.get("function_name")):
             stats["test_path_or_name"] += 1
