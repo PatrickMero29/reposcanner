@@ -98,10 +98,24 @@ A few things the trainer handles that are easy to get wrong with this kind of da
   train/val/test (~70/15/15 by CVE, not by row). Splitting only by `pair_id` still leaks.
   `vulnscan write-splits` persists `data/splits/{train,val,test}_pair_ids.json`;
   `bench-analyze` defaults to the test file.
-- **Filters truncation collisions**: if a before/after pair's differing lines fall past
-  `max_length` after tokenization, both versions collapse to an identical input with opposite
-  labels — directly contradictory training data. This affects roughly 12% of a real CVEfixes
-  run and is filtered out by default (`--filter-truncation-collisions`, on by default).
+- **Checkpoint selection is scan-faithful**: the checkpoint saved is whichever
+  epoch strictly improves val detection at the val-picked threshold, gated by
+  held-out generic ranking (`--generic-gate`, default 0.97 — calibrated on the
+  v20-era mix; with the current mix of fewer synthetic pairs + hard negatives
+  the same metric settles ~0.94, so lower it from *training* dynamics, never
+  from test numbers). v20's tolerance rule kept a worse later epoch; the
+  98% generic ranking is a gate plus a small FP penalty, never half the score.
+  The picked threshold is frozen into `threshold.json` next to the checkpoint.
+- **Diff-centered crops are the default**: a 512-token window centered on the
+  first before/after difference (with a short signature prefix) replaces
+  head-truncation, so the model sees the fix even in long functions instead of
+  both sides collapsing to an identical input. Run `--no-diff-centered-crop`
+  for the v20-era head-truncation behavior, and add
+  `--filter-truncation-collisions` in that mode so contradictory pairs are
+  dropped instead of cropped.
+- **Run artifacts for comparability**: seed, git hash, threshold, split IDs,
+  and the full config are saved next to the checkpoint (`run_meta.json`,
+  `threshold.json`, `splits/`), so two runs can be diffed config-first.
 - **Curated negatives and contrastive pairs are always trained on, never held out** — added
   after specific, diagnosed failure modes (e.g. the model generalizing "database cursor code =
   safe" too broadly until given an explicit `sql_injection` / `sql_parameterized` contrastive

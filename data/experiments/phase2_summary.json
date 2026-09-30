@@ -1,0 +1,55 @@
+{
+  "eval": "grouped (repo,cve) split, scan-faithful: TP=P(before)>=t & P(after)<t; noise=P(after)>=t; t frozen on val per model",
+  "dataset": "data/cvefixes_clean.duckdb (1643 pairs; test n=257, val n=229)",
+  "checkpoints": {
+    "v20": {
+      "note": "trained on old 3637-row table; 100% of clean test/val pairs were in that table -> numbers still memorization-inflated; true unseen-repo performance unknown/lower",
+      "val_picked_threshold": 0.65,
+      "test_detection": 0.2257,
+      "test_noise": 0.4008,
+      "test_by_length": {
+        "le_512": {
+          "detection": 0.3667,
+          "noise": 0.1083
+        },
+        "truncated": {
+          "detection": 0.1022,
+          "noise": 0.6569
+        }
+      }
+    },
+    "v21": {
+      "rule": "plan-exact: gate 0.97, strict improvement on val scan_detection + 0.05 FP penalty",
+      "best_epoch": 2,
+      "frozen_threshold": 0.8,
+      "test_detection": 0.0973,
+      "test_noise": 0.249,
+      "note": "epochs 3-6 gated out (generic ranking ~0.94 < 0.97); gate calibrated on v20 mix (ratio 1.0), not the phase-2 mix (ratio 0.4 + hard negatives)"
+    },
+    "v21b": {
+      "rule": "ablation: gate 0.93 (from training dynamics only), otherwise identical",
+      "best_epoch": 6,
+      "frozen_threshold": 0.75,
+      "val_scan_detection": 0.2995,
+      "val_scan_noise": 0.2589,
+      "generic_ranking": 0.9358,
+      "test_detection": 0.1167,
+      "test_noise": 0.5097,
+      "test_by_length": {
+        "le_512": {
+          "detection": 0.175,
+          "noise": 0.35
+        },
+        "truncated": {
+          "detection": 0.0657,
+          "noise": 0.6496
+        }
+      },
+      "sanity_train_side": "18/20",
+      "sanity_heldout": "11/14"
+    }
+  },
+  "headline_reality_check": "v20 full-table 62.39%/0.44% was train-set performance; on grouped test it is 22.6%/40.1% (still inflated by 100% pair overlap with its training table)",
+  "phase3_smoking_gun": "53% of test functions exceed 512 tokens; v20 noise on truncated bucket = 65.7%; v21/v21b training dropped 171/1157 long-diff pairs as collisions -> diff-centered crop + sliding windows is the next lever",
+  "env_default": "models/vuln-classifier-v21b (val-selected by the phase-2 rule; flip one line in .env to revert to v21)"
+}

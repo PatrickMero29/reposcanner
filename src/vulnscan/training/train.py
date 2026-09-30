@@ -40,6 +40,47 @@ def _git_hash() -> str | None:
         return None
 
 
+def selection_score(
+    epoch_metrics: dict,
+    *,
+    best_epoch_metric: str = "scan_detection",
+    generic_gate: float = GENERIC_RANKING_GATE,
+    after_prob_penalty: float = AFTER_PROB_PENALTY,
+) -> float:
+    """Phase-2 checkpoint selection score, extracted from the trainer so it's
+    unit-testable without torch.
+
+    The held-out generic ranking accuracy is a GATE (must stay >=
+    generic_gate), not 50% of the score -- averaging it in let a 98-99%
+    generic number paper over CVE-pair regressions. On top of the gate,
+    "scan_detection" scores val detection at the val-picked threshold minus a
+    small FP penalty on val avg after-code P(vulnerable).
+    """
+    generic_acc = epoch_metrics.get("held_out_generic_ranking_accuracy")
+    if generic_acc is not None and generic_acc < generic_gate:
+        return float("-inf")
+    if best_epoch_metric == "val_ranking_accuracy":
+        v = epoch_metrics.get("val_ranking_accuracy")
+        return v if v is not None else float("-inf")
+    if best_epoch_metric == "generic_ranking_accuracy":
+        return generic_acc if generic_acc is not None else float("-inf")
+    if best_epoch_metric == "composite":
+        cve_acc = epoch_metrics.get("val_ranking_accuracy")
+        vals = [v for v in (cve_acc, generic_acc) if v is not None]
+        return sum(vals) / len(vals) if vals else float("-inf")
+    if best_epoch_metric == "scan_detection":
+        det = epoch_metrics.get("val_scan_detection")
+        if det is None:
+            v = epoch_metrics.get("val_ranking_accuracy")
+            return v if v is not None else float("-inf")
+        after_p = epoch_metrics.get("val_avg_after_prob_vuln") or 0.0
+        return det - after_prob_penalty * after_p
+    raise ValueError(
+        f"Unknown best_epoch_metric={best_epoch_metric!r}, expected one of "
+        "'scan_detection', 'composite', 'val_ranking_accuracy', 'generic_ranking_accuracy'."
+    )
+
+
 def _filter_truncation_collisions(
     examples: list[Example], tokenizer, max_length: int
 ) -> list[Example]:
@@ -283,18 +324,23 @@ def train_model_pairwise(
     # handles the numerical stability. Auto-disabled on CPU regardless of
     # this flag. None = auto (on for CUDA, off for CPU).
     use_amp: bool | None = None,
-    # Which epoch's checkpoint ends up saved at out_dir. Every past run just
-    # kept whichever epoch happened to run last -- v10's held-out metrics
-    # weren't even monotonically improving epoch-to-epoch, so "last" and
-    # "best" aren't the same thing. Doesn't cost extra disk: only ever one
-    # checkpoint is written to out_dir, overwritten in place whenever a
-    # later epoch's score beats the best-so-far -- not one dir per epoch.
-    # "composite" = average of val_ranking_accuracy (fine-grained CVE-pair
-    # discrimination) and held-out generic ranking_accuracy (does this
-    # generalize to arbitrary code) -- the two things that matter and can
-    # trade off against each other, per the v9/v10 regression discussion.
+    # Which epoch's checkpoint ends up saved at out_dir. Only a STRICT
+    # improvement of the selection score moves the checkpoint -- v20's
+    # composite peaked at epoch 5 but the tolerance rule kept epoch 6.
+    # "scan_detection" (default) = val detection at the val-picked threshold,
+    # gated by held-out generic ranking (>= GENERIC_RANKING_GATE) and with a
+    # small FP penalty on val avg after-code P(vulnerable) -- NOT an average
+    # of the two, which let a 98-99% generic score paper over CVE-pair
+    # regressions. "composite"/"val_ranking_accuracy"/"generic_ranking_accuracy"
+    # remain selectable for ablations, still under the same gate.
     best_epoch_metric: str = "scan_detection",
-    best_epoch_tolerance: float = 0.0,
+    # Held-out generic ranking gate for checkpoint selection (see
+    # selection_score). 0.97 was calibrated on v20's training mix
+    # (generic_negative_ratio=1.0); the Phase-2 mix (ratio 0.4 + hard
+    # negatives) settles the same metric at ~0.94, so a run with the new
+    # mix may need this lowered -- choose from TRAINING dynamics, not
+    # test numbers (that's why it's a knob, not a retuned constant).
+    generic_gate: float = GENERIC_RANKING_GATE,
 ) -> str:
     """Trains the classifier with a pairwise margin-ranking objective PLUS an
     absolute cross-entropy anchor, instead of train_model()'s independent
@@ -703,26 +749,6 @@ def train_model_pairwise(
             ],
         }
 
-    def _selection_score(epoch_metrics: dict) -> float:
-        generic_acc = epoch_metrics.get("held_out_generic_ranking_accuracy")
-        if generic_acc is not None and generic_acc < GENERIC_RANKING_GATE:
-            return float("-inf")
-        if best_epoch_metric == "val_ranking_accuracy":
-            v = epoch_metrics.get("val_ranking_accuracy")
-            return v if v is not None else float("-inf")
-        if best_epoch_metric == "generic_ranking_accuracy":
-            return generic_acc if generic_acc is not None else float("-inf")
-        if best_epoch_metric == "composite":
-            cve_acc = epoch_metrics.get("val_ranking_accuracy")
-            vals = [v for v in (cve_acc, generic_acc) if v is not None]
-            return sum(vals) / len(vals) if vals else float("-inf")
-        det = epoch_metrics.get("val_scan_detection")
-        if det is None:
-            v = epoch_metrics.get("val_ranking_accuracy")
-            return v if v is not None else float("-inf")
-        after_p = epoch_metrics.get("val_avg_after_prob_vuln") or 0.0
-        return det - AFTER_PROB_PENALTY * after_p
-
     def _save_checkpoint(*, threshold: float | None) -> None:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         model.save_pretrained(out_dir)
@@ -798,7 +824,11 @@ def train_model_pairwise(
                 f"avg_prob_vuln(vuln/generic_negative)={g['avg_before_prob_vuln']:.3f}/{g['avg_after_prob_vuln']:.3f}"
             )
 
-        score = _selection_score(epoch_metrics)
+        score = selection_score(
+            epoch_metrics,
+            best_epoch_metric=best_epoch_metric,
+            generic_gate=generic_gate,
+        )
         epoch_metrics["selection_score"] = score
         is_best = score > best_score
         if is_best:
@@ -827,13 +857,25 @@ def train_model_pairwise(
         "seed": seed,
         "git_hash": _git_hash(),
         "threshold": best_threshold,
-        "ce_weight": ce_weight,
-        "generic_negative_ratio": generic_negative_ratio,
-        "hard_negative_ratio": hard_negative_ratio,
-        "split_dir": split_dir,
         "base_model": base_model,
+        "learning_rate": learning_rate,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "margin": margin,
+        "max_length": max_length,
+        "ce_weight": ce_weight,
+        "val_fraction": val_fraction,
+        "test_fraction": test_fraction,
+        "generic_negatives_path": generic_negatives_path,
+        "generic_negative_ratio": generic_negative_ratio,
+        "extra_negatives_path": extra_negatives_path,
+        "hard_negative_ratio": hard_negative_ratio,
+        "curated_negatives_path": curated_negatives_path,
+        "curated_pairs_path": curated_pairs_path,
+        "split_dir": split_dir,
         "best_epoch": best_epoch,
         "best_epoch_metric": best_epoch_metric,
+        "generic_gate": generic_gate,
         "dataset_db_path": dataset_db_path,
         "diff_centered_crop": diff_centered_crop,
         "filter_truncation_collisions": filter_truncation_collisions,

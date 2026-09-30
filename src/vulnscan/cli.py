@@ -88,6 +88,7 @@ def _cmd_train_model(args: argparse.Namespace) -> None:
         diff_centered_crop=not args.no_diff_centered_crop,
         filter_truncation_collisions=args.filter_truncation_collisions,
         hard_negative_ratio=args.hard_negative_ratio,
+        generic_gate=args.generic_gate,
     )
     print(f"Trained model saved to {out}")
 
@@ -210,6 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--curated-pairs", default="data/curated_vulnerable_pairs.jsonl")
     p_train.add_argument("--no-diff-centered-crop", action="store_true")
     p_train.add_argument("--filter-truncation-collisions", action="store_true")
+    p_train.add_argument(
+        "--generic-gate", type=float, default=0.97,
+        help="Checkpoint-selection gate on held-out generic ranking accuracy. "
+             "0.97 was calibrated on the v20 mix (ratio 1.0); the Phase-2 mix "
+             "settles ~0.94, so lower this from TRAINING dynamics, not test.",
+    )
     p_train.set_defaults(func=_cmd_train_model)
 
     p_bench_analyze = sub.add_parser("bench-analyze", help="Benchmark phase 1: run the local classifier over every before/after pair in the dataset.")
