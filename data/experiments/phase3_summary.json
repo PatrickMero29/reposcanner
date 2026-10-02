@@ -1,0 +1,84 @@
+{
+  "phase3_lever": "diff-centered 512-token training crop (window around first before/after difference, 16-token signature prefix) + sliding-window inference (stride 256, P=max)",
+  "collision_verification": {
+    "head_truncation_collisions_on_clean_set": "252/1643 (15.3%) -- these were DROPPED by v21/v21b training",
+    "collisions_after_crop": "0/1643 (0.00%)",
+    "far_diff_pair_sizes": "median 1763 tokens, max 159242"
+  },
+  "test_split": "data/splits/test_pair_ids.json (n=257, grouped by repo+cve; v20 saw 100% of these in its old training table)",
+  "checkpoints_test_scan_faithful": {
+    "v20": {
+      "t": 0.65,
+      "note": "contaminated",
+      "det": 0.2257,
+      "noise": 0.4008,
+      "by_len": {
+        "le512": [
+          0.3667,
+          0.1083
+        ],
+        "trunc": [
+          0.1022,
+          0.6569
+        ]
+      }
+    },
+    "v21": {
+      "t": 0.8,
+      "note": "gate 0.97 kept epoch 2",
+      "det": 0.0973,
+      "noise": 0.249
+    },
+    "v21b": {
+      "t": 0.75,
+      "note": "no crop; 171 long-diff train pairs dropped",
+      "det": 0.1167,
+      "noise": 0.5097,
+      "by_len": {
+        "le512": [
+          0.175,
+          0.35
+        ],
+        "trunc": [
+          0.0657,
+          0.6496
+        ]
+      }
+    },
+    "v22": {
+      "t": 0.75,
+      "note": "CROP; best epoch 4; all 1157 train pairs kept",
+      "det": 0.1673,
+      "noise": 0.428,
+      "by_len": {
+        "le512": [
+          0.2,
+          0.275
+        ],
+        "trunc": [
+          0.1387,
+          0.562
+        ]
+      },
+      "test_pr_best": "det 0.18 @ noise 0.48 (t=0.65); dominates v21b at every matched noise",
+      "sanity": {
+        "train_side": "20/20 (project best)",
+        "held_out": "13/14"
+      },
+      "trainer_val": "det 0.2445 / noise 0.2227 @ t=0.75, generic ranking 0.9458"
+    },
+    "v22u": {
+      "t": 0.75,
+      "note": "UniXcoder ablation, identical settings",
+      "det": 0.1284,
+      "noise": 0.3502,
+      "sanity": {
+        "train_side": "17/20 (3 regressions)",
+        "held_out": "10/14"
+      },
+      "verdict": "REJECTED: dominated by v22 at matched noise; sanity regressed (pickle/yaml/cmd misses). Stay on CodeBERT."
+    }
+  },
+  "headline": "v22 = 16.7% detection @ 42.8% noise at frozen t=0.75 on an uncontaminated grouped test split; truncated-bucket detection doubled vs v21b (6.6% -> 13.9%)",
+  "env_default": "models/vuln-classifier-v22"
+}
