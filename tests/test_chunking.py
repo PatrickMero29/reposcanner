@@ -58,6 +58,34 @@ def test_chunk_file_handles_syntax_errors_gracefully():
     assert chunks == []
 
 
+INDENTED_CLASS_SOURCE = '''import os
+
+class Handler:
+    def handle(self, request):
+        query = f"SELECT * FROM users WHERE id = {request.id}"
+        return query
+
+    def safe_method(self, base, name):
+        return os.path.join(base, os.path.basename(name))
+'''
+
+
+def test_chunk_file_dedents_methods_to_column_zero():
+    # Scan-time input must match the training distribution exactly: the clean
+    # CVEfixes table stores methods dedented, so method chunks must be too.
+    chunks = {c.function_name: c for c in chunk_file("sample.py", INDENTED_CLASS_SOURCE)}
+    handle = chunks["Handler.handle"]
+    assert handle.code.startswith("def handle(self, request):")
+    assert "class Handler" not in handle.code
+    safe = chunks["Handler.safe_method"]
+    assert safe.code.startswith("def safe_method(self, base, name):")
+
+
+def test_chunk_file_keeps_qualified_name_for_methods():
+    chunks = chunk_file("sample.py", INDENTED_CLASS_SOURCE)
+    assert {c.function_name for c in chunks} == {"Handler.handle", "Handler.safe_method"}
+
+
 NESTED_CLOSURE_SOURCE = '''
 import os
 

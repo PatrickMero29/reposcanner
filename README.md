@@ -64,18 +64,37 @@ vulnscan scan /path/to/some/repo --out report --format both
 Walks the repo, runs Semgrep, extracts flagged Python functions via `ast`
 (`src/vulnscan/chunking/python_chunker.py`), and — once a model is trained — runs those through
 the local classifier too. Writes `report.json` and `report.md` with static and AI findings kept
-in clearly separate sections.
+in clearly separate sections. Test files (`tests/`, `test_*.py`, `*_test.py`, `conftest.py`,
+specs/fixtures) are skipped during discovery — security fixes routinely touch them and a test
+method isn't vulnerable application code.
 
 ```bash
 vulnscan scan /path/to/repo --no-semgrep                                    # skip the pre-filter, analyze every function
 vulnscan scan /path/to/repo --semgrep-config p/security-audit --semgrep-config p/secrets
 ```
 
+Semgrep status decides what the classifier sees:
+
+- **ran clean (exit 0/1), zero findings** → nothing is classified; the repo is clean. This is
+  deliberately different from a *broken* semgrep.
+- **not installed / timed out / nonzero exit** → fail open: every function is classified, at a
+  higher confidence bar (`LOCAL_MODEL_FAILOPEN_CONFIDENCE_THRESHOLD`, floor 0.7).
+- **ran clean with findings** → only functions overlapping a finding are classified; if a
+  finding flags a line inside a long function, an extra sliding window is centered on it.
+
 Custom Semgrep rules live in `semgrep_rules/supplementary_rules.yaml`, added because
 `p/security-audit`'s taint-based rules can miss sinks with no visible caller providing taint
-context (confirmed for command injection, path traversal, and SQL injection specifically —
-verified 3/3 caught with 0 false positives across safe counterparts). These load automatically
-alongside `p/security-audit` if the file exists.
+context. Beyond the original command-injection / path-traversal / SQL-concat rules, it also
+covers `pickle.load(s)`, `yaml.load` without a safe loader, `eval`/`exec`,
+`subprocess.*(..., shell=True)`, and concatenated/f-string request URLs. All of them are
+verified against a must-catch/must-not-catch corpus: 12/12 caught with 0 false positives —
+including the classic traps `model.eval()`, `session.exec()`, `yaml.safe_load`, list-arg
+subprocess, and `params=`-style requests. These load automatically alongside `p/security-audit`
+if the file exists. Scan recall is capped by Semgrep whenever the pre-filter is active, so this
+file is the first place to look when a real vuln slips through a prefiltered scan.
+
+The operating threshold comes from the checkpoint itself (`threshold.json`, picked on val at
+train time) — no manual threshold tuning at scan time.
 
 ## Training your own classifier
 

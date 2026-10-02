@@ -1,0 +1,44 @@
+{
+  "item_1_failopen_semantics": {
+    "status": "verified by tests + e2e",
+    "behavior": "ok(exit 0/1) + results=[] -> classify NOTHING; unavailable/timeout/error -> fail open, classify all at higher bar (max of checkpoint threshold and LOCAL_MODEL_FAILOPEN_CONFIDENCE_THRESHOLD, default 0.7)",
+    "tests": "tests/test_scan_repo.py (9 scan-path tests)"
+  },
+  "item_2_skip_tests_in_discover": {
+    "status": "verified",
+    "regex": "shared with ghsa_extract.py via dataset/filters.py"
+  },
+  "item_3_checkpoint_dir": {
+    "status": ".env -> models/vuln-classifier-v22 (v20 then v21 superseded by the val-selected v22)"
+  },
+  "item_4_threshold": {
+    "status": "verified",
+    "behavior": "v22 threshold.json (0.75, val-picked) used automatically; fail-open floor 0.7; never lowers a frozen checkpoint threshold"
+  },
+  "item_5_supplementary_rules": {
+    "status": "verified with real semgrep 1.171.0 against must-catch/must-not-catch corpus",
+    "recall": "13/13 (os.system concat, open concat incl. assignment+with-open shapes, SQL concat, pickle.loads, pickle.load, yaml bare/UnsafeLoader, eval, exec, subprocess shell=True, requests concat, urlopen concat, literal-first path concat)",
+    "false_positives": "0/16 (incl. model.eval(), session.exec(), yaml.safe_load/SafeLoader, list-arg subprocess, shell=False, params= requests, parameterized SQL, os.path.join, ast.literal_eval, json.loads, LLM-client wrappers, executor.run, constant open, join+basename)",
+    "fix_applied": "open-dynamic-path: removed metavariable-pattern that excluded literal-first concatenations (\"/prefix/\" + user_path) -- the most common path-traversal shape was invisible to the prefilter, capping scan recall"
+  },
+  "item_6_chunker": {
+    "status": "deviation from plan letter, per plan goal",
+    "decision": "dedent-only, NO class-line prepend. Measured on val with v22: prepend shifts P(vulnerable) by -0.19 mean on methods (55% of chunks; max 0.85) because training data (dedented CVEfixes) has no class lines. The plan goal is train/scan match, and the prepend defeats it. Class name reaches reports via qualified function_name. Follow-up option: v23 retrain with synthetic class lines on BOTH sides.",
+    "tests": "chunker dedent tests in tests/test_chunking.py"
+  },
+  "item_7_markdown_headings": {
+    "status": "fixed earlier: heading = function name; CVE enrichment blob under a Classifier-note body section"
+  },
+  "item_8_lazy_numpy": {
+    "status": "verified: no module-level numpy/torch anywhere on the scan path (encoder, index, inference); base install can Semgrep-only scan"
+  },
+  "e2e_prefiltered_scan": {
+    "repo": "synthetic: os.system concat, >512-token function with sink at end, model.eval(), LLM-client wrapper, add(), tests/",
+    "result": "static=2 (CWE-78 os-system-call, CWE-22 open-dynamic-path), ai=2 (run_report conf 0.779, long_runner conf 0.941 via centered sliding window); add_numbers/client wrapper/model.eval() not classified; tests/ skipped"
+  },
+  "e2e_failopen_scan": {
+    "result": "ai=2, same two true positives at the 0.75 bar, 0 FPs"
+  },
+  "tests": "92 passed (was 66 before phase 4)",
+  "cleanup": "dead src/vulnscan/rules/scan_repo_overlay.py deleted (tests ported to tests/test_scan_repo.py)"
+}

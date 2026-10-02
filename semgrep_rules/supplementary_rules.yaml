@@ -37,10 +37,6 @@ rules:
               ...
               with open($PATH, ...) as $F:
                   ...
-      - metavariable-pattern:
-          metavariable: $X
-          patterns:
-            - pattern-not: '"..."'
     message: >-
       File path built via string concatenation or f-string, then passed to
       open(). Flagged unconditionally -- if any part comes from external

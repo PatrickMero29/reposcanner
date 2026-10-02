@@ -1,7 +1,11 @@
 """Extracts individual top-level, method, and class-level function
 definitions from Python source using the standard library `ast` module,
-with enough surrounding context (decorators, containing class signature) to
-be analyzable in isolation.
+dedented to column 0 so the input distribution matches training data
+(dedented CVEfixes functions).
+
+The containing class reaches downstream consumers via the qualified
+function_name ("Handler.handle"), not via a synthetic class line in the
+chunk -- see the comment in _visit_function.
 
 Deliberately does NOT chunk closures (functions nested inside other
 functions) as separate fragments -- they're already included verbatim
@@ -49,10 +53,17 @@ def chunk_file(file_path: str, source: str) -> list[CodeChunk]:
         def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
             qualified_name = ".".join([*self.class_stack, node.name])
             code = _get_source_segment(source_lines, node)
+            # Dedent to column 0 so scan-time input matches the training
+            # distribution exactly (the clean CVEfixes table stores methods
+            # dedented). Measured on val with v22: prepending a synthetic
+            # "class X:" line shifts P(vulnerable) by -0.19 mean on methods
+            # (55% of chunks) -- the model never saw class lines in training,
+            # so the prepend defeats the train/scan match it was meant to
+            # provide. The class name still reaches reports via the qualified
+            # function_name; a future v23 could add synthetic class lines to
+            # BOTH sides and retrain if class context proves worth it.
             if code:
                 code = textwrap.dedent(code)
-                if self.class_stack:
-                    code = f"class {self.class_stack[-1]}:\n{textwrap.indent(code, '    ')}"
             # Skip trivial stubs (pass-only / docstring-only / ellipsis bodies)
             # — nothing for the analyzer to find here and it just burns tokens.
             meaningful_body = [
